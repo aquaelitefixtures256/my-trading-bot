@@ -1,0 +1,8 @@
+pandas
+numpy
+yfinance
+requests
+python-dotenv
+MetaTrader5
+pandas-ta
+vaderSentiment
