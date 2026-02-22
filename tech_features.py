@@ -1,14 +1,4 @@
 # features/tech_features.py
-"""
-Very defensive technical indicators module.
-
-- Normalizes odd input shapes (tuples, MultiIndex, nested lists/Series in cells)
-- Avoids fillna(method=...) and uses ffill()/bfill()
-- Uses 'ta' when available, otherwise pandas fallbacks
-- Exports:
-    add_technical_indicators(df) -> DataFrame
-    technical_signal_score(df) -> float
-"""
 from __future__ import annotations
 import logging
 from typing import Optional
@@ -17,21 +7,19 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# Optional 'ta' library (bukosabino/ta)
 try:
     from ta.trend import SMAIndicator, EMAIndicator, MACD
     from ta.momentum import RSIIndicator
     from ta.volatility import AverageTrueRange, BollingerBands
     from ta.volume import OnBalanceVolumeIndicator
     TA_AVAILABLE = True
-    logger.info("ta library detected: using 'ta' for indicators")
+    logger.info("ta library detected: using 'ta'")
 except Exception:
     TA_AVAILABLE = False
-    logger.info("ta library not available: falling back to pandas implementations")
+    logger.info("ta not available — using pandas fallbacks")
 
 
 def _to_dataframe_safe(obj) -> pd.DataFrame:
-    """Return a safe DataFrame copy for various input types."""
     if obj is None:
         return pd.DataFrame()
     if isinstance(obj, pd.DataFrame):
@@ -48,7 +36,6 @@ def _to_dataframe_safe(obj) -> pd.DataFrame:
 
 
 def _flatten_cell(x):
-    """If x is array-like (not str), return last item; otherwise return x or NaN."""
     try:
         if x is None:
             return np.nan
@@ -69,32 +56,24 @@ def _flatten_cell(x):
 
 
 def _normalize_ohlcv(df: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
-    """
-    Ensure df has scalar numeric columns: open, high, low, close, volume.
-    Defensive about MultiIndex, tuple column names, nested cells.
-    Returns normalized DataFrame or None if impossible.
-    """
     if df is None:
         return None
     df = _to_dataframe_safe(df)
     if df.empty:
         return None
 
-    # Flatten tuple/MultiIndex column names to strings
     try:
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = ["_".join(map(str, c)).strip() for c in df.columns]
     except Exception:
         pass
 
-    # Ensure all column names are strings and lowercase for matching
     try:
         df.columns = [str(c) for c in df.columns]
         df.rename(columns={c: c.lower() for c in df.columns}, inplace=True)
     except Exception:
         pass
 
-    # Map common candidates to standard names
     for standard in ("open", "high", "low", "close", "volume"):
         if standard not in df.columns:
             found = None
@@ -105,20 +84,16 @@ def _normalize_ohlcv(df: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
             if found is not None:
                 df[standard] = df[found]
 
-    # Use adj close if close missing
     if "close" not in df.columns and "adj close" in df.columns:
         df["close"] = df["adj close"]
 
-    # Flatten nested/object cells for OHLCV columns
     for col in ("open", "high", "low", "close", "volume"):
         if col in df.columns and df[col].dtype == object:
             try:
                 df[col] = df[col].apply(_flatten_cell)
             except Exception:
-                # fallback: leave as-is; coercion below will handle non-numerics
                 pass
 
-    # Coerce numeric with safe fallbacks
     for col in ("open", "high", "low", "close", "volume"):
         if col in df.columns:
             try:
@@ -132,17 +107,14 @@ def _normalize_ohlcv(df: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
         else:
             df[col] = np.nan
 
-    # Ensure datetime index if possible
     try:
         df.index = pd.to_datetime(df.index)
     except Exception:
         pass
 
-    # Fill by forward then backward, then remaining with zeros — avoid fillna(method=...) calls
     try:
         df[["open", "high", "low", "close", "volume"]] = df[["open", "high", "low", "close", "volume"]].ffill().bfill().fillna(0.0)
     except Exception:
-        # If assignment fails for any reason, ensure at least these columns exist and are numeric
         for col in ("open", "high", "low", "close", "volume"):
             if col in df.columns:
                 try:
@@ -152,7 +124,6 @@ def _normalize_ohlcv(df: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
             else:
                 df[col] = 0.0
 
-    # drop rows that are entirely empty (extreme)
     try:
         df = df.dropna(how="all", subset=["open", "high", "low", "close", "volume"])
     except Exception:
@@ -162,17 +133,11 @@ def _normalize_ohlcv(df: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
 
 
 def add_technical_indicators(df: Optional[pd.DataFrame]) -> pd.DataFrame:
-    """
-    Adds indicator columns to a defensive copy of df:
-      - sma5, sma20, ema50
-      - macd
-      - rsi14
-      - bb_upper, bb_lower
-      - atr14
-      - obv
-    """
     df = _to_dataframe_safe(df)
-    df = _normalize_ohlcv(df) or pd.DataFrame()
+    # <-- fix: avoid truth-testing DataFrame; explicitly test for None
+    _tmp = _normalize_ohlcv(df)
+    df = _tmp if _tmp is not None else pd.DataFrame()
+
     if df.empty:
         return df
 
@@ -201,7 +166,6 @@ def add_technical_indicators(df: Optional[pd.DataFrame]) -> pd.DataFrame:
                 df["obv"] = 0.0
 
         else:
-            # pandas fallbacks
             df["sma5"] = df["close"].rolling(window=5, min_periods=1).mean()
             df["sma20"] = df["close"].rolling(window=20, min_periods=1).mean()
             df["ema50"] = df["close"].ewm(span=50, adjust=False).mean()
@@ -232,7 +196,6 @@ def add_technical_indicators(df: Optional[pd.DataFrame]) -> pd.DataFrame:
             sign = df["close"].diff().fillna(0.0).apply(lambda x: 1 if x > 0 else (-1 if x < 0 else 0))
             df["obv"] = (df["volume"] * sign).cumsum().fillna(0.0)
 
-        # safe fill for new indicator columns — use ffill/bfill to avoid fillna(method=...) call
         for col in ("sma5", "sma20", "ema50", "macd", "rsi14", "bb_upper", "bb_lower", "atr14", "obv"):
             if col in df.columns:
                 try:
@@ -247,7 +210,6 @@ def add_technical_indicators(df: Optional[pd.DataFrame]) -> pd.DataFrame:
 
 
 def _safe_get_scalar(row, col, default=0.0):
-    """Return float scalar even if stored value is array-like/Series."""
     try:
         val = row.get(col, default)
     except Exception:
@@ -273,9 +235,6 @@ def _safe_get_scalar(row, col, default=0.0):
 
 
 def technical_signal_score(df: Optional[pd.DataFrame]) -> float:
-    """
-    Robust heuristic score [-1, 1].
-    """
     try:
         if df is None or len(df) < 2:
             return 0.0
@@ -305,7 +264,6 @@ def technical_signal_score(df: Optional[pd.DataFrame]) -> float:
         elif r > 70:
             score -= 0.25
 
-        # clamp
         if score > 1.0: score = 1.0
         if score < -1.0: score = -1.0
         return float(score)
