@@ -1,84 +1,47 @@
 @echo off
-REM ---------- diagnostic + robust run_notex5.bat ----------
-REM Start in the batch file folder
+REM --- robust run_notex5.bat ---
+REM ensure the script runs from its containing folder
 pushd "%~dp0"
-echo Working folder: %CD%
 
-REM 1) Check python venv
-if exist "%~dp0venv\Scripts\activate.bat" (
-  echo venv activate found: %~dp0venv\Scripts\activate.bat
-) else (
-  echo ERROR: venv activate NOT found at "%~dp0venv\Scripts\activate.bat"
-)
-
-if exist "%~dp0venv\Scripts\python.exe" (
-  echo venv python found: %~dp0venv\Scripts\python.exe
-) else (
-  echo ERROR: venv python NOT found at "%~dp0venv\Scripts\python.exe"
-)
-
-REM 2) Ensure logs folder exists (create if missing)
-if not exist "%~dp0logs" (
-  echo logs folder missing — creating logs folder
-  mkdir "%~dp0logs"
-) else (
-  echo logs folder exists
-)
-
-REM 3) MT5 path (edit below if your MT5 is in a different path)
+REM ==== adjust these values if needed ====
+REM Path to MT5 terminal executable (adjust if different)
 set MT5_PATH=C:\Program Files\MetaTrader 5\terminal64.exe
-echo Checking MT5 path: "%MT5_PATH%"
-if exist "%MT5_PATH%" (
-  echo MT5 terminal found.
-) else (
-  echo ERROR: MT5 terminal NOT found at "%MT5_PATH%"
-)
 
-REM 4) Optional: show full directory listing for quick inspection
-echo ---- Directory listing (top) ----
-dir "%~dp0" /b
-echo ----------------------------------
+REM Session-only env (edit values on EC2)
+set MT5_LOGIN=298105279
+set MT5_PASSWORD=Haja12@#
+set MT5_SERVER=Exness-MT5Trial9
+set CONFIRM_AUTO=I UNDERSTAND THE RISKS
+set TELEGRAM_BOT_TOKEN=8441599191:AAHK5NjJ7glha2DoyAvdZImDyYb-fYWtMps
+set TELEGRAM_CHAT_ID=8025669850
+set DECISION_SLEEP=60
+REM If you want live trading, uncomment the next line (only when ready)
+REM set CONFIRM_AUTO=I UNDERSTAND THE RISKS
 
-REM 5) Start MT5 if not running
+REM Start MT5 if not already running (safe check)
 tasklist /FI "IMAGENAME eq terminal64.exe" | find /I "terminal64.exe" >nul
 if errorlevel 1 (
-  echo MT5 not running — attempting to start "%MT5_PATH%"
+  echo Starting MT5 terminal...
   start "" "%MT5_PATH%"
+  REM wait a little for terminal to initialize (adjust seconds if needed)
   timeout /t 6 /nobreak >nul
 ) else (
-  echo MT5 already running.
+  echo MT5 already running
 )
 
-REM 6) Activate venv (will print error if not found)
+REM Activate venv and run bot
 if exist "%~dp0venv\Scripts\activate.bat" (
   call "%~dp0venv\Scripts\activate.bat"
 ) else (
-  echo ERROR: cannot activate venv (file missing)
-  pause
+  echo ERROR: venv activate script not found at "%~dp0venv\Scripts\activate.bat"
+  echo Press any key to exit...
+  pause >nul
   popd
   exit /b 1
 )
 
-REM 7) Print python version from venv
-where python
-python --version
-
-REM 8) Final check: Notex5.py present?
-if exist "%~dp0Notex5.py" (
-  echo Found Notex5.py
-) else (
-  echo ERROR: Notex5.py NOT found in "%~dp0"
-  pause
-  popd
-  exit /b 1
-)
-
-REM 9) Run the bot and append logs (this will show any runtime error)
-echo Starting Notex5.py — writing logs to "%~dp0logs\notex5.log"
+REM Run the bot and append log
 python "%~dp0Notex5.py" >> "%~dp0logs\notex5.log" 2>&1
 
-echo Bot finished (or crashed). See logs\notex5.log for details.
-echo Press any key to exit...
-pause
-
+REM Done
 popd
