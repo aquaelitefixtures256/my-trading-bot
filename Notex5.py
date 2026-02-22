@@ -1,21 +1,27 @@
 #!/usr/bin/env python3
-# Notex5.py - Robust Notex5 main bot (overwrite existing)
+"""
+Notex5.py - defensive, single-file main bot.
+Overwrite your existing Notex5.py with this code.
+Run inside your venv:
+  venv\Scripts\activate
+  python Notex5.py
+"""
 from __future__ import annotations
 import os
+import sys
 import time
 import json
 import logging
 import sqlite3
 import threading
 import requests
-import subprocess
 from datetime import datetime, date, timezone
 from typing import Optional, Dict, Any, List
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("Notex5")
 
-# Safety / config
+# ---------------- Safety / config ----------------
 DEMO_SIMULATION = True
 AUTO_EXECUTE = False
 if os.getenv("CONFIRM_AUTO", "") == "I UNDERSTAND THE RISKS":
@@ -39,12 +45,13 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 MODEL_API_URL = os.getenv("MODEL_API_URL")
 
-# import features
+# ---------------- features import (tech indicators) ----------------
 try:
     from features.tech_features import add_technical_indicators, technical_signal_score  # type: ignore
     logger.info("Imported features.tech_features")
 except Exception as e:
-    logger.warning("features.tech_features import failed: %s. Using minimal fallbacks.", e)
+    logger.warning("Could not import features.tech_features (%s). Using small internal fallbacks.", e)
+
     def add_technical_indicators(df):
         try:
             import pandas as pd
@@ -52,9 +59,15 @@ except Exception as e:
             if "close" in df.columns:
                 df["sma5"] = df["close"].rolling(5, min_periods=1).mean()
                 df["sma20"] = df["close"].rolling(20, min_periods=1).mean()
+                delta = df["close"].diff()
+                up = delta.clip(lower=0.0).rolling(window=14, min_periods=1).mean()
+                down = -delta.clip(upper=0.0).rolling(window=14, min_periods=1).mean().replace(0,1e-9)
+                rs = up / down
+                df["rsi14"] = 100 - (100/(1+rs))
             return df
         except Exception:
             return df
+
     def technical_signal_score(df):
         try:
             if df is None or len(df) < 2:
@@ -63,11 +76,14 @@ except Exception as e:
             score = 0.0
             if prev.get("sma5",0) <= prev.get("sma20",0) and latest.get("sma5",0) > latest.get("sma20",0):
                 score += 0.6
+            r = float(latest.get("rsi14",50) or 50)
+            if r < 30: score += 0.2
+            if r > 70: score -= 0.2
             return max(-1.0, min(1.0, score))
         except Exception:
             return 0.0
 
-# ------------- robust yfinance fetcher -------------
+# ---------------- Utility: yfinance candidates ----------------
 def symbol_to_yfinance_candidates(sym: str) -> List[str]:
     s = str(sym).upper().replace("/", "").replace("-", "").strip()
     mapping = {
@@ -80,42 +96,39 @@ def symbol_to_yfinance_candidates(sym: str) -> List[str]:
     candidates = mapping.get(s, []) + [f"{s}=X", s]
     if s.endswith("USD"):
         candidates.append(s.replace("USD","-USD"))
-    # dedupe while preserving order
-    out = []
-    seen = set()
+    # dedupe preserving order
+    out=[]; seen=set()
     for c in candidates:
         if c and c not in seen:
             out.append(c); seen.add(c)
     return out
 
+# ---------------- Helpers to normalize data ----------------
 def _normalize_df_columns(df):
-    """Normalize any column names (MultiIndex or tuple) to lowercase strings."""
+    """Turn column names into simple lowercase strings (handles MultiIndex and tuples)."""
     try:
         if df is None:
             return None
-        # flatten MultiIndex
-        if hasattr(df.columns, "levels") and str(type(df.columns)).find("MultiIndex")!=-1:
-            df.columns = ["_".join(map(str,c)).strip() for c in df.columns]
-        # ensure string names
-        df.columns = [str(c) for c in df.columns]
-        # lower-case mapping for matching
-        col_map = {}
+        # flatten MultiIndex or tuple names
+        cols = []
         for c in df.columns:
-            lc = str(c).lower()
-            col_map[c] = lc
-        df.rename(columns=col_map, inplace=True)
+            if isinstance(c, tuple):
+                cols.append("_".join(map(str, c)))
+            else:
+                cols.append(str(c))
+        df.columns = cols
+        # lower-case mapping
+        df.rename(columns={c: str(c).lower() for c in df.columns}, inplace=True)
         return df
     except Exception:
-        # final attempt: cast columns to strings
         try:
-            df.columns = [str(c) for c in df.columns]
-            df.columns = [c.lower() for c in df.columns]
+            df.columns = [str(c).lower() for c in df.columns]
         except Exception:
             pass
         return df
 
 def _map_to_ohlcv(df):
-    """Ensure df has open, high, low, close, volume columns (coerced numeric)."""
+    """Map a DataFrame to columns open/high/low/close/volume and coerce numeric values."""
     import pandas as pd
     import numpy as np
     if df is None:
@@ -123,25 +136,24 @@ def _map_to_ohlcv(df):
     df = _normalize_df_columns(df)
     if df is None:
         return None
-    # attempt to find/match columns
-    for req in ("open", "high", "low", "close", "volume"):
+    # try to find/match columns
+    for req in ("open","high","low","close","volume"):
         if req not in df.columns:
             candidates = [c for c in df.columns if req in str(c)]
             if candidates:
                 df[req] = df[candidates[0]]
-    # if still missing close but 'adj close' exists, use it
+    # fallback: use 'adj close' if close missing
     if "close" not in df.columns and "adj close" in df.columns:
         df["close"] = df["adj close"]
-    # flatten nested cells
-    for col in ("open", "high", "low", "close", "volume"):
-        if col in df.columns:
-            if df[col].dtype == object:
-                try:
-                    df[col] = df[col].apply(lambda x: (x[-1] if (hasattr(x, "__len__") and not isinstance(x, (str, bytes))) else x) if x is not None else None)
-                except Exception:
-                    pass
-    # coerce to numeric
-    for col in ("open", "high", "low", "close", "volume"):
+    # flatten nested values if object dtype
+    for col in ("open","high","low","close","volume"):
+        if col in df.columns and df[col].dtype == object:
+            try:
+                df[col] = df[col].apply(lambda x: (x[-1] if (hasattr(x,"__len__") and not isinstance(x,(str,bytes))) else x) if x is not None else None)
+            except Exception:
+                pass
+    # coerce numeric
+    for col in ("open","high","low","close","volume"):
         if col in df.columns:
             try:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -153,23 +165,39 @@ def _map_to_ohlcv(df):
                     df[col] = np.nan
         else:
             df[col] = np.nan
-    # index to datetime
+    # ensure datetime index
     try:
         df.index = pd.to_datetime(df.index)
     except Exception:
         pass
-    # drop rows with all NaN OHLCV
+    # drop rows where all OHLCV are NaN
     try:
         df = df.dropna(how="all", subset=["open","high","low","close","volume"])
     except Exception:
         pass
     return df
 
+# ----- compatibility wrapper (fixes NameError calls to _normalize_ohlcv) -----
+def _normalize_ohlcv(df):
+    """
+    Compatibility wrapper: some code calls _normalize_ohlcv but the
+    implementation here is _map_to_ohlcv — use that.
+    Returns a normalized OHLCV DataFrame or None.
+    """
+    try:
+        if "_map_to_ohlcv" in globals():
+            return _map_to_ohlcv(df)
+    except Exception:
+        return None
+    return None
+# ---------------------------------------------------------------------------
+
+# ------------------ fetchers (yfinance) ------------------
 def fetch_ohlcv(symbol: str, interval: str = "60m", period_days: int = 60):
     try:
         import yfinance as yf
     except Exception as e:
-        logger.error("yfinance missing: %s", e)
+        logger.error("yfinance import failed: %s", e)
         return None
     candidates = symbol_to_yfinance_candidates(symbol)
     last_exc = None
@@ -178,52 +206,51 @@ def fetch_ohlcv(symbol: str, interval: str = "60m", period_days: int = 60):
             logger.info("Trying ticker '%s' for symbol '%s' (interval=%s)", t, symbol, interval)
             df = yf.download(t, period=f"{period_days}d", interval=interval, progress=False)
             if df is None or df.empty:
-                logger.debug("Ticker %s returned no data (empty)", t)
+                logger.debug("Ticker %s returned no data", t)
                 continue
-            # if yfinance returned a Series (single column), convert
-            if isinstance(df, (list, tuple)):
-                # unexpected tuple — skip
-                last_exc = TypeError("yfinance returned tuple, skipping")
+            # If yfinance returned a tuple or unexpected type skip
+            if isinstance(df, tuple):
+                last_exc = TypeError("yfinance returned tuple")
                 continue
-            # normalize + map to ohlcv
             df = _map_to_ohlcv(df)
             if df is None or df.empty:
-                logger.debug("Ticker %s returned frame but mapping to OHLCV failed", t)
+                logger.debug("Ticker %s returned data but mapping to OHLCV failed", t)
                 continue
             logger.info("Fetched %d rows for %s using %s", len(df), symbol, t)
             return df
         except Exception as e:
             last_exc = e
-            logger.debug("yfinance try failed for %s: %s", t, getattr(e,"args",e))
+            logger.debug("yfinance attempt for %s failed: %s", t, getattr(e,"args",e))
             continue
     logger.warning("All candidates failed for %s. Last err: %s", symbol, getattr(last_exc,"args",last_exc))
     return None
 
 def fetch_multi_timeframes(symbol: str, tfs=TIMEFRAMES, period_days=60):
-    import pandas as pd
+    """
+    Defensive fetch for requested timeframes.
+    H4 is created by resampling H1 (60m).
+    """
     out = {}
-    def _normalize_ohlcv_frame(df):
-        return _map_to_ohlcv(df) if df is not None else None
-
     for label, interval in tfs.items():
         if label == "H4":
             base = fetch_ohlcv(symbol, interval="60m", period_days=period_days)
             if base is None or getattr(base,"empty",True):
                 out[label] = None
                 continue
-            base = _normalize_ohlcv(base)
-            if base is None:
-                logger.info("H4 normalization failed for %s - skipping H4", symbol)
+            # use the compatibility wrapper to normalize
+            base_norm = _normalize_ohlcv(base)
+            if base_norm is None:
+                logger.info("Resample skipped for %s (H4): normalization failed", symbol)
                 out[label] = None
                 continue
-            # try both capital H and lower h
+            # try uppercase then lowercase
             try:
-                df4 = base.resample("4H").agg({"open":"first","high":"max","low":"min","close":"last","volume":"sum"}).dropna()
+                df4 = base_norm.resample("4H").agg({"open":"first","high":"max","low":"min","close":"last","volume":"sum"}).dropna()
             except Exception:
                 try:
-                    df4 = base.resample("4h").agg({"open":"first","high":"max","low":"min","close":"last","volume":"sum"}).dropna()
+                    df4 = base_norm.resample("4h").agg({"open":"first","high":"max","low":"min","close":"last","volume":"sum"}).dropna()
                 except Exception as e:
-                    logger.info("Resample 4H failed for %s: %s", symbol, e)
+                    logger.info("Resampling to 4H failed for %s: %s", symbol, e)
                     out[label] = None
                     continue
             out[label] = df4
@@ -232,7 +259,7 @@ def fetch_multi_timeframes(symbol: str, tfs=TIMEFRAMES, period_days=60):
             out[label] = _normalize_ohlcv(df) if df is not None else None
     return out
 
-# ------------- DB, Telegram, MT5 helpers (unchanged, compact) -------------
+# ---------------- SQLite trade DB ----------------
 def init_trade_db():
     conn = sqlite3.connect(TRADE_LOG_DB, timeout=5)
     cur = conn.cursor()
@@ -262,6 +289,7 @@ def record_trade_db(symbol, side, lots, entry, sl, tp, status, order_meta=""):
     except Exception:
         logger.exception("Failed to write trade to DB")
 
+# ---------------- Telegram alerts ----------------
 def send_telegram(message: str):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         logger.debug("Telegram not configured. Skipping message.")
@@ -282,48 +310,47 @@ def send_telegram(message: str):
         logger.exception("Telegram send failed")
         return False
 
-_mt5 = None
-_mt5_connected = False
-
-def connect_mt5(login: Optional[int]=None, password: Optional[str]=None, server: Optional[str]=None) -> bool:
-    global _mt5, _mt5_connected
-    try:
-        import MetaTrader5 as mt5  # type: ignore
-        _mt5 = mt5
-    except Exception as e:
-        logger.error("MetaTrader5 import failed: %s", e)
-        return False
-    login = login or (int(MT5_LOGIN) if MT5_LOGIN and str(MT5_LOGIN).isdigit() else None)
-    password = password or MT5_PASSWORD
-    server = server or MT5_SERVER
-    if login is None or password is None or server is None:
-        logger.warning("MT5 credentials missing; MT5 will not be used")
-        return False
-    try:
-        ok = _mt5.initialize(login=login, password=password, server=server)
-        if not ok:
-            logger.error("MT5 initialize failed: %s", _mt5.last_error())
-            _mt5_connected = False
-            return False
-        _mt5_connected = True
-        logger.info("MT5 initialized (login=%s server=%s)", login, server)
-        return True
-    except Exception:
-        logger.exception("MT5 connect error")
-        _mt5_connected = False
-        return False
-
+# ----------------- Order placement (demo) -----------------
 def place_order(symbol: str, side: str, lots: float, entry_price: float, sl: float, tp: Optional[float] = None):
-    logger.info("PLACE ORDER REQUEST %s %s lots=%.2f entry=%.6f sl=%.6f tp=%s", symbol, side, lots, entry_price, sl, tp)
-    # demo mode only for now
+    logger.info("PLACE ORDER REQUEST %s %s lots=%.2f entry=%s sl=%s tp=%s", symbol, side, lots, entry_price, sl, tp)
+    allowed = True
+    if not allowed:
+        record_trade_db(symbol, side, lots, entry_price, sl, tp, status="rejected", order_meta="blocked")
+        return {"status":"rejected"}
     if DEMO_SIMULATION:
         record_trade_db(symbol, side, lots, entry_price, sl, tp, status="demo", order_meta={"note":"demo"})
-        send_telegram(f"Notex5 ALERT (demo)\n{symbol} {side} entry={entry_price:.6f} sl={sl:.6f} tp={tp:.6f} lots={lots}")
+        send_telegram(f"Notex5 ALERT (demo)\n{symbol} {side}\nEntry: {entry_price}\nSL: {sl}\nTP: {tp}\nLots: {lots}")
         return {"status":"demo"}
-    # live path omitted (we already have place_order_mt5 in previous examples)...
+    # live path (not enabled here)
     return {"status":"live_not_enabled"}
 
-# ------------- Strategy core -------------
+# ---------------- Strategy helpers ----------------
+def compute_atr_sl(entry_price: float, df, multiplier: float = 1.25) -> float:
+    try:
+        if df is None or getattr(df,"empty",True):
+            return max(0.00001, abs(entry_price)*0.01)
+        if "atr14" in df.columns:
+            return float(df["atr14"].iloc[-1])
+        # fallback ATR
+        import pandas as pd
+        tr = pd.concat([df["high"] - df["low"], (df["high"] - df["close"].shift()).abs(), (df["low"] - df["close"].shift()).abs()], axis=1).max(axis=1)
+        atr = tr.rolling(14, min_periods=1).mean().iloc[-1]
+        return max(0.00001, float(atr) * multiplier)
+    except Exception:
+        return max(0.00001, abs(entry_price)*0.01)
+
+def compute_lots_from_risk(risk_pct: float, balance: float, entry_price: float, stop_price: float) -> float:
+    try:
+        risk_amount = balance * risk_pct
+        pip_risk = abs(entry_price - stop_price)
+        if pip_risk <= 0:
+            return 0.01
+        lots = risk_amount / (pip_risk * 100000)
+        return round(max(0.01, lots), 2)
+    except Exception:
+        return 0.01
+
+# ---------------- Core strategy ----------------
 def aggregate_multi_tf_scores(tf_dfs: Dict[str,Any]) -> Dict[str,float]:
     techs=[]
     for label, df in tf_dfs.items():
@@ -358,16 +385,16 @@ def make_decision_for_symbol(symbol: str):
         final_signal = None
         if candidate is not None and abs(total_score) >= 0.55:
             final_signal = candidate
-        decision = {"symbol":symbol,"scores":scores,"agg":total_score,"final_signal":final_signal}
+        decision = {"symbol":symbol,"scores":scores,"model_score":model_score,"agg":total_score,"final_signal":final_signal}
         if final_signal:
             entry = float(df_h1["close"].iloc[-1])
-            stop_dist = max(0.0001, float(df_h1.get("atr14", df_h1["close"].std()).iloc[-1])) if "atr14" in df_h1.columns else abs(entry)*0.01
+            stop_dist = compute_atr_sl(entry, add_technical_indicators(df_h1), multiplier=1.25)
             if final_signal == "BUY":
                 sl = entry - stop_dist; tp = entry + stop_dist*2.0
             else:
                 sl = entry + stop_dist; tp = entry - stop_dist*2.0
             balance = 1000.0
-            lots = 0.01
+            lots = compute_lots_from_risk(RISK_PER_TRADE_PCT, balance, entry, sl)
             order_res = place_order(symbol, final_signal, lots, entry, sl, tp)
             decision.update({"entry":entry,"sl":sl,"tp":tp,"lots":lots,"order_result":order_res})
         else:
@@ -378,15 +405,16 @@ def make_decision_for_symbol(symbol: str):
         logger.exception("make_decision_for_symbol failed for %s", symbol)
         return None
 
+# ---------------- Runner ----------------
 def run_one_cycle():
-    res = {}
+    res={}
     for s in SYMBOLS:
         res[s] = make_decision_for_symbol(s)
         time.sleep(0.2)
     return res
 
 def main_loop():
-    logger.info("Starting continuous loop (DEMO=%s)", DEMO_SIMULATION)
+    logger.info("Starting loop (DEMO=%s)", DEMO_SIMULATION)
     try:
         while True:
             run_one_cycle()
@@ -394,14 +422,9 @@ def main_loop():
     except KeyboardInterrupt:
         logger.info("Stopped by user")
 
+# ---------------- Startup ----------------
 if __name__ == "__main__":
     init_trade_db()
-    # try connect MT5 if creds exist (optional)
-    try:
-        if MT5_LOGIN and MT5_PASSWORD and MT5_SERVER:
-            connect_mt5(login=int(MT5_LOGIN) if str(MT5_LOGIN).isdigit() else None, password=MT5_PASSWORD, server=MT5_SERVER)
-    except Exception:
-        logger.exception("MT5 connect attempt failed")
     logger.info("Prefetching symbol data once before first decision cycle")
     for s in SYMBOLS:
         try:
