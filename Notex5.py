@@ -1,13 +1,5 @@
 #!/usr/bin/env python3
-"""
-Notex5.py - robust main trading bot
-
-Drop into your Muc_universe folder (overwrite existing Notex5.py).
-Requires: pandas, yfinance, requests, MetaTrader5 (if using MT5), numpy
-Run in your venv:
-    venv\Scripts\activate
-    python Notex5.py
-"""
+# Notex5.py - robust main trading bot (overwrite your existing file)
 from __future__ import annotations
 import os
 import sys
@@ -25,7 +17,6 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger("Notex5")
 
 # ---------------- Safety / config ----------------
-# Default: demo/safe mode. Set CONFIRM_AUTO exactly to enable live orders.
 DEMO_SIMULATION = True
 AUTO_EXECUTE = False
 REQUIRE_MANUAL_LIVE_CONFIRM = False
@@ -34,23 +25,18 @@ if os.getenv("CONFIRM_AUTO", "") == "I UNDERSTAND THE RISKS":
     AUTO_EXECUTE = True
     REQUIRE_MANUAL_LIVE_CONFIRM = False
 
-# Symbols and timeframe configuration
 SYMBOLS = ["EURUSD", "XAGUSD", "XAUUSD", "BTCUSD", "USDJPY"]
-# We'll fetch H1 as "60m", resample to 4H; daily uses "1d"
 TIMEFRAMES = {"H1": "60m", "H4": "4H", "D": "1d"}
 
-# Risk controls
-RISK_PER_TRADE_PCT = float(os.getenv("RISK_PER_TRADE_PCT", "2"))
-MAX_TOTAL_OPEN_TRADES = int(os.getenv("MAX_TOTAL_OPEN_TRADES", "10"))
-MAX_OPEN_TRADES_PER_SYMBOL = int(os.getenv("MAX_OPEN_TRADES_PER_SYMBOL", "5"))
-MAX_DAILY_TRADES = int(os.getenv("MAX_DAILY_TRADES", "30"))
-MAX_DAILY_LOSS_PCT = float(os.getenv("MAX_DAILY_LOSS_PCT", "2"))
+RISK_PER_TRADE_PCT = float(os.getenv("RISK_PER_TRADE_PCT", "0.005"))
+MAX_TOTAL_OPEN_TRADES = int(os.getenv("MAX_TOTAL_OPEN_TRADES", "3"))
+MAX_OPEN_TRADES_PER_SYMBOL = int(os.getenv("MAX_OPEN_TRADES_PER_SYMBOL", "1"))
+MAX_DAILY_TRADES = int(os.getenv("MAX_DAILY_TRADES", "5"))
 
 TRADE_LOG_DB = os.getenv("TRADE_LOG_DB", "trades.db")
 KILL_SWITCH_FILE = os.getenv("KILL_SWITCH_FILE", "STOP_TRADING.flag")
 DECISION_SLEEP = int(os.getenv("DECISION_SLEEP", "60"))
 
-# Environment-driven credentials
 MT5_PATH = os.getenv("MT5_PATH", r"C:\Program Files\MetaTrader 5\terminal64.exe")
 MT5_LOGIN = os.getenv("MT5_LOGIN")
 MT5_PASSWORD = os.getenv("MT5_PASSWORD")
@@ -61,54 +47,42 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 MODEL_API_URL = os.getenv("MODEL_API_URL")
 
-# ---------------- features import (robust) ----------------
-# We expect a features package with tech_features implementing:
-#   add_technical_indicators(df) and technical_signal_score(df)
+# ---------------- features import ----------------
 try:
     from features.tech_features import add_technical_indicators, technical_signal_score  # type: ignore
     logger.info("Imported features.tech_features")
 except Exception as e:
-    logger.warning("Could not import features.tech_features (%s). Using internal safe fallbacks.", e)
-    # Provide minimal safe fallbacks (shouldn't be needed if features/tech_features.py present)
+    logger.warning("Could not import features.tech_features (%s). Using lightweight fallbacks.", e)
     def add_technical_indicators(df):
         try:
             import pandas as pd
             df = df.copy()
-            if "close" in df.columns:
+            if "close" in df:
                 df["sma5"] = df["close"].rolling(5, min_periods=1).mean()
                 df["sma20"] = df["close"].rolling(20, min_periods=1).mean()
-                delta = df["close"].diff().fillna(0.0)
-                up = delta.clip(lower=0.0).rolling(14, min_periods=1).mean()
-                down = -delta.clip(upper=0.0).rolling(14, min_periods=1).mean().replace(0,1e-9)
-                rs = up / down
-                df["rsi14"] = 100 - (100/(1+rs))
-                tr1 = (df["high"] - df["low"]).abs()
-                tr2 = (df["high"] - df["close"].shift()).abs()
-                tr3 = (df["low"] - df["close"].shift()).abs()
-                tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-                df["atr14"] = tr.rolling(14, min_periods=1).mean()
+                df["rsi14"] = (df["close"].diff().fillna(0).clip(lower=0).rolling(14, min_periods=1).mean()
+                               / (df["close"].diff().abs().rolling(14, min_periods=1).mean().replace(0,1e-8))) * 100
             return df
         except Exception:
             return df
-
     def technical_signal_score(df):
         try:
             if df is None or len(df) < 2:
                 return 0.0
             latest = df.iloc[-1]; prev = df.iloc[-2]
-            s = 0.0
-            if prev.get("sma5", 0) <= prev.get("sma20", 0) and latest.get("sma5",0) > latest.get("sma20",0):
-                s += 0.6
+            score = 0.0
+            if prev.get("sma5",0) <= prev.get("sma20",0) and latest.get("sma5",0) > latest.get("sma20",0):
+                score += 0.6
             r = float(latest.get("rsi14",50) or 50)
-            if r < 30: s += 0.2
-            if r > 70: s -= 0.2
-            return max(-1.0, min(1.0, s))
+            if r < 30: score += 0.2
+            if r > 70: score -= 0.2
+            return max(-1.0, min(1.0, score))
         except Exception:
             return 0.0
 
-# ---------------- Data fetchers (yfinance) ----------------
+# ---------------- Data fetchers ----------------
 def symbol_to_yfinance_candidates(sym: str) -> List[str]:
-    s = str(sym).upper().replace("/", "").replace("-", "").strip()
+    s = str(sym).upper().replace("/","").replace("-","").strip()
     mapping = {
         "XAGUSD": ["SI=F","XAGUSD=X","XAGUSD"],
         "XAUUSD": ["GC=F","XAUUSD=X","XAUUSD"],
@@ -119,7 +93,6 @@ def symbol_to_yfinance_candidates(sym: str) -> List[str]:
     candidates = mapping.get(s, []) + [f"{s}=X", s]
     if s.endswith("USD"):
         candidates.append(s.replace("USD","-USD"))
-    # dedupe
     seen=set(); out=[]
     for c in candidates:
         if c and c not in seen:
@@ -142,13 +115,32 @@ def fetch_ohlcv(symbol: str, interval: str = "60m", period_days: int = 60):
             if df is None or df.empty:
                 logger.debug("Ticker %s returned no data", t)
                 continue
-            df = df.rename(columns={"Open":"open","High":"high","Low":"low","Close":"close","Volume":"volume"})
-            df = df[["open","high","low","close","volume"]].dropna()
-            # ensure datetime index
+            df = df.rename(columns={c:c.lower() for c in df.columns})
+            # try to standardize columns to lower-case open/high/low/close/volume
+            colmap = {}
+            for c in df.columns:
+                if "open" in c.lower(): colmap[c] = "open"
+                if "high" in c.lower(): colmap[c] = "high"
+                if "low" in c.lower(): colmap[c] = "low"
+                if "close" in c.lower(): colmap[c] = "close"
+                if "volume" in c.lower(): colmap[c] = "volume"
+            if colmap:
+                df = df.rename(columns=colmap)
+            # keep required columns if present
+            if not all(k in df.columns for k in ("open","high","low","close","volume")):
+                # still accept if 'Close' present; fill missing with NaN - downstream will handle
+                df = df
+            # convert index to datetime
             try:
                 df.index = pd.to_datetime(df.index)
             except Exception:
                 pass
+            # keep minimal subset
+            # ensure columns exist
+            for col in ("open","high","low","close","volume"):
+                if col not in df.columns:
+                    df[col] = pd.NA
+            df = df[["open","high","low","close","volume"]].dropna(how="all")
             logger.info("Fetched %d rows for %s using %s", len(df), symbol, t)
             return df
         except Exception as e:
@@ -159,27 +151,63 @@ def fetch_ohlcv(symbol: str, interval: str = "60m", period_days: int = 60):
     return None
 
 def fetch_multi_timeframes(symbol: str, tfs=TIMEFRAMES, period_days=60):
+    """
+    Defensive fetch for timeframes. Normalizes column names and resamples H1->H4.
+    """
     import pandas as pd
     out = {}
+    def _normalize_ohlcv_frame(df: pd.DataFrame) -> Optional[pd.DataFrame]:
+        if df is None or getattr(df,"empty",True):
+            return None
+        df = df.copy()
+        try:
+            df.columns = [str(c).lower() for c in df.columns]
+        except Exception:
+            pass
+        # map variants
+        for req in ("open","high","low","close","volume"):
+            if req not in df.columns:
+                candidates = [c for c in df.columns if req in str(c)]
+                if candidates:
+                    df[req] = df[candidates[0]]
+        if not all(c in df.columns for c in ("open","high","low","close","volume")):
+            return None
+        # coerce numeric where possible
+        try:
+            df["open"] = pd.to_numeric(df["open"], errors="coerce")
+            df["high"] = pd.to_numeric(df["high"], errors="coerce")
+            df["low"] = pd.to_numeric(df["low"], errors="coerce")
+            df["close"] = pd.to_numeric(df["close"], errors="coerce")
+            df["volume"] = pd.to_numeric(df["volume"], errors="coerce")
+        except Exception:
+            pass
+        try:
+            df.index = pd.to_datetime(df.index)
+        except Exception:
+            pass
+        return df
+
     for label, interval in tfs.items():
         if label == "H4":
             base = fetch_ohlcv(symbol, interval="60m", period_days=period_days)
-            if base is not None and not base.empty:
+            if base is None or getattr(base,"empty",True):
+                out[label] = None; continue
+            base = _normalize_ohlcv_frame(base)
+            if base is None:
+                logger.warning("Resampling to 4H skipped for %s: required OHLCV columns missing after normalization", symbol)
+                out[label] = None; continue
+            try:
+                df4 = base.resample("4H").agg({"open":"first","high":"max","low":"min","close":"last","volume":"sum"}).dropna()
+            except Exception:
                 try:
-                    base.index = pd.to_datetime(base.index)
-                    # try uppercase then lowercase freq for compatibility
-                    try:
-                        df4 = base.resample("4H").agg({"open":"first","high":"max","low":"min","close":"last","volume":"sum"}).dropna()
-                    except Exception:
-                        df4 = base.resample("4h").agg({"open":"first","high":"max","low":"min","close":"last","volume":"sum"}).dropna()
-                    out[label] = df4
+                    df4 = base.resample("4h").agg({"open":"first","high":"max","low":"min","close":"last","volume":"sum"}).dropna()
                 except Exception as e:
                     logger.warning("Resampling to 4H failed for %s: %s", symbol, e)
-                    out[label] = None
-            else:
-                out[label] = None
+                    out[label] = None; continue
+            out[label] = df4
         else:
-            out[label] = fetch_ohlcv(symbol, interval=interval, period_days=period_days)
+            df = fetch_ohlcv(symbol, interval=interval, period_days=period_days)
+            out[label] = _normalize_ohlcv_frame(df) if df is not None else None
     return out
 
 # ---------------- AI model placeholder ----------------
@@ -190,26 +218,26 @@ def ai_model_score(symbol: str, features: Dict[str,Any]) -> float:
         resp = requests.post(MODEL_API_URL, json={"symbol":symbol,"features":features}, timeout=6)
         if resp.status_code == 200:
             data = resp.json(); return float(data.get("score",0.0))
-    except Exception as e:
-        logger.debug("Model call failed: %s", e)
+    except Exception:
+        logger.debug("Model call failed")
     return 0.0
 
-# ---------------- SQLite trade DB ----------------
+# ---------------- SQLite DB ----------------
 def init_trade_db():
     conn = sqlite3.connect(TRADE_LOG_DB, timeout=5)
     cur = conn.cursor()
     cur.execute("""
     CREATE TABLE IF NOT EXISTS trades (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        timestamp TEXT,
-        symbol TEXT,
-        side TEXT,
-        lots REAL,
-        entry REAL,
-        sl REAL,
-        tp REAL,
-        status TEXT,
-        order_meta TEXT
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      timestamp TEXT,
+      symbol TEXT,
+      side TEXT,
+      lots REAL,
+      entry REAL,
+      sl REAL,
+      tp REAL,
+      status TEXT,
+      order_meta TEXT
     );
     """)
     conn.commit(); conn.close()
@@ -257,10 +285,8 @@ def kill_switch_engaged():
 def can_place_trade(symbol):
     if kill_switch_engaged(): return False, "kill-switch"
     if get_today_trade_count() >= MAX_DAILY_TRADES: return False, "daily-cap"
-    total_open = get_open_trade_counts()
-    if total_open >= MAX_TOTAL_OPEN_TRADES: return False, "total-open-limit"
-    per_symbol = get_open_trade_counts(symbol)
-    if per_symbol >= MAX_OPEN_TRADES_PER_SYMBOL: return False, "symbol-open-limit"
+    if get_open_trade_counts() >= MAX_TOTAL_OPEN_TRADES: return False, "total-open-limit"
+    if get_open_trade_counts(symbol) >= MAX_OPEN_TRADES_PER_SYMBOL: return False, "symbol-open-limit"
     return True, "ok"
 
 # ---------------- Telegram ----------------
@@ -406,7 +432,7 @@ def account_balance_estimate() -> float:
 
 def compute_atr_sl(entry_price: float, df, multiplier: float = 1.25) -> float:
     try:
-        if df is None or getattr(df, "empty", True):
+        if df is None or getattr(df,"empty",True):
             return max(0.00001, abs(entry_price)*0.01)
         if "atr14" in df.columns:
             atr = float(df["atr14"].iloc[-1])
@@ -450,15 +476,7 @@ def aggregate_multi_tf_scores(tf_dfs: Dict[str,Any]) -> Dict[str,float]:
     tech_agg = 0.0
     if techs:
         s = sum(t*w for t,w in techs); w = sum(w for _,w in techs); tech_agg = float(s/w)
-    try:
-        fund = float(0.0)
-    except Exception:
-        fund = 0.0
-    try:
-        sent = float(0.0)
-    except Exception:
-        sent = 0.0
-    return {"tech": tech_agg, "fund": fund, "sent": sent}
+    return {"tech": tech_agg, "fund": 0.0, "sent": 0.0}
 
 def is_crypto_symbol(sym: str) -> bool:
     s = str(sym).upper()
@@ -468,7 +486,6 @@ def is_tradable_now(symbol: str) -> bool:
     wd = datetime.utcnow().weekday()
     if is_crypto_symbol(symbol):
         return True
-    # block FX on weekend (Sat=5, Sun=6)
     if wd >= 5:
         return False
     return True
@@ -485,21 +502,12 @@ def make_decision_for_symbol(symbol: str):
         w_tech=0.4; w_fund=0.15; w_sent=0.15; w_model=0.3
         total_score = (w_tech*scores["tech"] + w_fund*scores["fund"] + w_sent*scores["sent"] + w_model*model_score)
         candidate = None
-        try:
-            # simple mapping
-            if total_score >= 0.35: candidate = "BUY"
-            if total_score <= -0.35: candidate = "SELL"
-        except Exception:
-            candidate = None
-        bias = "NEUTRAL"
-        smc_side = None
+        if total_score >= 0.35: candidate = "BUY"
+        if total_score <= -0.35: candidate = "SELL"
         final_signal = None
-        if smc_side == "BUY" and candidate == "BUY" and bias == "BULL": final_signal="BUY"
-        elif smc_side == "SELL" and candidate == "SELL" and bias == "BEAR": final_signal="SELL"
-        else:
-            if candidate is not None and abs(total_score) >= 0.55:
-                final_signal = candidate
-        decision = {"symbol":symbol,"scores":scores,"model_score":model_score,"agg":total_score,"bias":bias,"smc_side":smc_side,"candidate":candidate,"final_signal":final_signal}
+        if candidate is not None and abs(total_score) >= 0.55:
+            final_signal = candidate
+        decision = {"symbol":symbol,"scores":scores,"model_score":model_score,"agg":total_score,"final_signal":final_signal}
         if final_signal:
             entry = float(df_h1["close"].iloc[-1])
             stop_dist = compute_atr_sl(entry, add_technical_indicators(df_h1), multiplier=1.25)
@@ -577,7 +585,6 @@ def main_loop():
 # ---------------- Startup ----------------
 if __name__ == "__main__":
     init_trade_db()
-    # try connect mt5 if creds available
     try:
         if MT5_LOGIN and MT5_PASSWORD and MT5_SERVER:
             connect_mt5(login=int(MT5_LOGIN) if str(MT5_LOGIN).isdigit() else None, password=MT5_PASSWORD, server=MT5_SERVER)
