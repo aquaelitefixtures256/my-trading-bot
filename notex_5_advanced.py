@@ -670,7 +670,7 @@ def make_decision_for_symbol(symbol: str, live: bool = False):
         if total_score <= -CURRENT_THRESHOLD:
             candidate = "SELL"
         final_signal = None
-        if candidate is not None and abs(total_score) >= (CURRENT_THRESHOLD * 0.75):
+        if candidate is not None and abs(total_score) >= (CURRENT_THRESHOLD * 0.20):
             final_signal = candidate
         decision = {"symbol": symbol, "agg": total_score, "tech": tech_score, "model_score": model_score, "final": final_signal}
         if final_signal:
