@@ -26,7 +26,7 @@ if os.getenv("CONFIRM_AUTO", "") == "I UNDERSTAND THE RISKS":
     REQUIRE_MANUAL_LIVE_CONFIRM = False
 
 SYMBOLS = ["EURUSD", "XAGUSD", "XAUUSD", "BTCUSD", "USDJPY"]
-TIMEFRAMES = {"M30": "30m", "H1": "60m", "H4": "4H"}
+TIMEFRAMES = {"M30": "30m", "H1": "60m"}
 
 RISK_PER_TRADE_PCT = float(os.getenv("RISK_PER_TRADE_PCT", "0.0017"))
 MAX_TOTAL_OPEN_TRADES = int(os.getenv("MAX_TOTAL_OPEN_TRADES", "15"))
@@ -506,7 +506,7 @@ def aggregate_multi_tf_scores(tf_dfs: Dict[str,Any]) -> Dict[str,float]:
                 continue
             dfind = add_technical_indicators(df)
             tscore = technical_signal_score(dfind)
-            weight = {"M30":1.0,"H1":1.0,"H4":1.6}.get(label,1.0)
+            weight = {"M30":1.4,"H1":1.6}.get(label,1.0)
             techs.append((tscore, weight))
         except Exception:
             logger.exception("Failed to compute technicals for %s", label)
