@@ -527,10 +527,10 @@ def make_decision_for_symbol(symbol: str):
         model_score = 0.0
         total_score = 0.4*scores["tech"] + 0.15*scores["fund"] + 0.15*scores["sent"] + 0.3*model_score
         candidate = None
-        if total_score >= 0.35: candidate = "BUY"
-        if total_score <= -0.35: candidate = "SELL"
+        if total_score >= 0.25: candidate = "BUY"
+        if total_score <= -0.25: candidate = "SELL"
         final_signal = None
-        if candidate is not None and abs(total_score) >= 0.55:
+        if candidate is not None and abs(total_score) >= 0.35:
             final_signal = candidate
         decision = {"symbol":symbol,"scores":scores,"model_score":model_score,"agg":total_score,"final_signal":final_signal}
         if final_signal:
