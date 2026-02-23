@@ -26,9 +26,9 @@ if os.getenv("CONFIRM_AUTO", "") == "I UNDERSTAND THE RISKS":
     REQUIRE_MANUAL_LIVE_CONFIRM = False
 
 SYMBOLS = ["EURUSD", "XAGUSD", "XAUUSD", "BTCUSD", "USDJPY"]
-TIMEFRAMES = {"H1": "60m", "H4": "4H"}
+TIMEFRAMES = {"M30": "30m", "H1": "60m", "H4": "4H"}
 
-RISK_PER_TRADE_PCT = float(os.getenv("RISK_PER_TRADE_PCT", "0.002"))
+RISK_PER_TRADE_PCT = float(os.getenv("RISK_PER_TRADE_PCT", "0.0017"))
 MAX_TOTAL_OPEN_TRADES = int(os.getenv("MAX_TOTAL_OPEN_TRADES", "15"))
 MAX_OPEN_TRADES_PER_SYMBOL = int(os.getenv("MAX_OPEN_TRADES_PER_SYMBOL", "5"))
 MAX_DAILY_TRADES = int(os.getenv("MAX_DAILY_TRADES", "30"))
@@ -506,7 +506,7 @@ def aggregate_multi_tf_scores(tf_dfs: Dict[str,Any]) -> Dict[str,float]:
                 continue
             dfind = add_technical_indicators(df)
             tscore = technical_signal_score(dfind)
-            weight = {"H1":1.0,"H4":1.6}.get(label,1.0)
+            weight = {"M30":1.0,"H1":1.0,"H4":1.6}.get(label,1.0)
             techs.append((tscore, weight))
         except Exception:
             logger.exception("Failed to compute technicals for %s", label)
@@ -527,10 +527,10 @@ def make_decision_for_symbol(symbol: str):
         model_score = 0.0
         total_score = 0.4*scores["tech"] + 0.15*scores["fund"] + 0.15*scores["sent"] + 0.3*model_score
         candidate = None
-        if total_score >= 0.25: candidate = "BUY"
-        if total_score <= -0.25: candidate = "SELL"
+        if total_score >= 0.20: candidate = "BUY"
+        if total_score <= -0.20: candidate = "SELL"
         final_signal = None
-        if candidate is not None and abs(total_score) >= 0.2:
+        if candidate is not None and abs(total_score) >= 0.15:
             final_signal = candidate
         decision = {"symbol":symbol,"scores":scores,"model_score":model_score,"agg":total_score,"final_signal":final_signal}
         if final_signal:
