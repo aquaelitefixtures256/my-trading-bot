@@ -66,15 +66,15 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger("Notex5_advanced")
 
 # ---------------- Config ----------------
-# Canonical symbols we use internally. We'll map to Exness-style broker symbols (suffix 'm') when needed.
+# Canonical symbols we use internally. We'll map to JustMarkets-style broker symbols (suffix '.m') when needed.
 SYMBOLS = ["EURUSD", "XAGUSD", "XAUUSD", "BTCUSD", "USDJPY"]
-# Mapping to Exness-style broker symbols (change if your broker uses different names)
+# Mapping to JustMarkets-style broker symbols (change if your broker uses different names)
 BROKER_SYMBOLS = {
-    "EURUSD": "EURUSDm",
-    "XAGUSD": "XAGUSDm",
-    "XAUUSD": "XAUUSDm",
-    "BTCUSD": "BTCUSDm",
-    "USDJPY": "USDJPYm",
+    "EURUSD": "EURUSD.m",
+    "XAGUSD": "XAGUSD.m",
+    "XAUUSD": "XAUUSD.m",
+    "BTCUSD": "BTCUSD.m",
+    "USDJPY": "USDJPY.m",
 }
 
 # Timeframes used
@@ -115,7 +115,7 @@ DECISION_SLEEP = int(os.getenv("DECISION_SLEEP", "60"))
 MT5_LOGIN = os.getenv("MT5_LOGIN")
 MT5_PASSWORD = os.getenv("MT5_PASSWORD")
 MT5_SERVER = os.getenv("MT5_SERVER")
-MT5_PATH = os.getenv("MT5_PATH", r"C:\Program Files\MetaTrader 5\terminal64.exe")
+MT5_PATH = os.getenv("MT5_PATH", r"C:\Program Files\JustMarkets MetaTrader 5\terminal64.exe")
 
 # Telegram (optional)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
