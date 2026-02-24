@@ -37,7 +37,7 @@ TRADE_LOG_DB = os.getenv("TRADE_LOG_DB", "trades.db")
 KILL_SWITCH_FILE = os.getenv("KILL_SWITCH_FILE", "STOP_TRADING.flag")
 DECISION_SLEEP = int(os.getenv("DECISION_SLEEP", "60"))
 
-MT5_PATH = os.getenv("MT5_PATH", r"C:\Program Files\MetaTrader 5\terminal64.exe")
+MT5_PATH = os.getenv("MT5_PATH", r"C:\Program Files (x86)\MetaTrader 5\terminal64.exe")
 MT5_LOGIN = os.getenv("MT5_LOGIN")
 MT5_PASSWORD = os.getenv("MT5_PASSWORD")
 MT5_SERVER = os.getenv("MT5_SERVER")
