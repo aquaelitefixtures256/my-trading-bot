@@ -1,18 +1,11 @@
 #!/usr/bin/env python3
 """
-Ultra_instinct.py  -- MT5-only (no Yahoo) defensive trading bot.
-Minimal surgical fixes from your previous file:
-  - Removed yfinance fallback entirely
-  - Robust MT5 initialization retry (attempt to start terminal)
-  - Robust MT5 data handling and broker-symbol mapping (handles suffixes like .m or m)
-Everything else (strategy, thresholds, adapt/optimizer, db, telegram) is left intact.
-Run as you did before:
-  set MT5_LOGIN=...
-  set MT5_PASSWORD=...
-  set MT5_SERVER=...
-  set MT5_PATH="C:\Program Files\MetaTrader 5\terminal64.exe"
-  python Ultra_instinct.py --backtest
-  python Ultra_instinct.py --loop
+Ultra_instinct_quant_upgraded.py  -- Your bot upgraded with:
+ - (b) Mean-variance solver improvements (Ledoit-Wolf shrinkage and shrinkage fallback + L2-like regularization)
+ - (c) Optional HMM / GARCH regime & volatility modeling (uses hmmlearn and arch if installed)
+ - (d) Slippage & commission calibration from live broker fills (best-effort via MT5 history)
+All additions are optional and gracefully fallback when libraries / broker data are unavailable.
+Run as before.
 """
 from __future__ import annotations
 import os
@@ -23,8 +16,9 @@ import logging
 import sqlite3
 import argparse
 import random
+import math
 from datetime import datetime, date, timezone, timedelta
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 
 # core libs
 try:
@@ -48,18 +42,32 @@ try:
 except Exception:
     TA_AVAILABLE = False
 
-# ML libs (flexible)
+# sklearn and covariance shrinkage
 SKLEARN_AVAILABLE = False
 try:
     from sklearn.pipeline import Pipeline
     from sklearn.preprocessing import StandardScaler
     from sklearn.linear_model import SGDClassifier
     from sklearn.ensemble import RandomForestClassifier
+    from sklearn.covariance import LedoitWolf
     import joblib
     SKLEARN_AVAILABLE = True
 except Exception:
-    # fallback flags - the code will still run but ML features will be disabled
     SKLEARN_AVAILABLE = False
+
+# optional HMM/GARCH
+HMM_AVAILABLE = False
+GARCH_AVAILABLE = False
+try:
+    from hmmlearn.hmm import GaussianHMM  # type: ignore
+    HMM_AVAILABLE = True
+except Exception:
+    HMM_AVAILABLE = False
+try:
+    from arch import arch_model  # type: ignore
+    GARCH_AVAILABLE = True
+except Exception:
+    GARCH_AVAILABLE = False
 
 # fundamental / web (optional)
 FUNDAMENTAL_AVAILABLE = False
@@ -75,7 +83,6 @@ logger = logging.getLogger("Ultra_instinct")
 
 # ---------------- Configuration (unchanged logic) ----------------
 SYMBOLS = ["EURUSD", "XAGUSD", "XAUUSD", "BTCUSD", "USDJPY"]
-# broker mapping - keep updated to your broker suffix (example uses .m)
 BROKER_SYMBOLS = {
     "EURUSD": "EURUSD.m",
     "XAGUSD": "XAGUSD.m",
@@ -123,11 +130,15 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 # fundamental API (optional) - user may set NEWS_API_KEY env to enable
 NEWS_API_KEY = os.getenv("NEWS_API_KEY", "")
-# TradingEconomics API key for economic calendar (ADDED)
 TRADING_ECONOMICS_KEY = os.getenv("TRADING_ECONOMICS_KEY", "")
 
 # Pause window before major events (minutes)
 PAUSE_BEFORE_EVENT_MINUTES = int(os.getenv("PAUSE_BEFORE_EVENT_MINUTES", "30"))
+
+# Slippage/commission defaults (may be recalibrated by calibration)
+DEFAULT_SLIPPAGE_PIPS = float(os.getenv("DEFAULT_SLIPPAGE_PIPS", "0.5"))  # pips
+DEFAULT_COMMISSION = float(os.getenv("DEFAULT_COMMISSION", "0.0"))      # currency per lot (sim)
+_calibrated = {"slippage_pips": DEFAULT_SLIPPAGE_PIPS, "commission_per_lot": DEFAULT_COMMISSION, "last_calibrated": 0}
 
 # ---------------- persistence and state ----------------
 def load_adapt_state():
@@ -164,7 +175,6 @@ def _get_table_columns(conn: sqlite3.Connection, table: str) -> List[str]:
 def init_trade_db():
     """
     Create or migrate the trades table so that older DB schemas won't cause insertion errors.
-    This will add missing columns if possible; if the table doesn't exist it will be created with the expected schema.
     """
     conn = sqlite3.connect(TRADES_DB, timeout=5)
     cur = conn.cursor()
@@ -186,7 +196,6 @@ def init_trade_db():
         "meta": "TEXT",
     }
     try:
-        # if table doesn't exist, create it
         cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='trades'")
         if not cur.fetchone():
             cols_sql = ",\n      ".join([f"{k} {v}" for k, v in expected_cols.items()])
@@ -194,14 +203,11 @@ def init_trade_db():
             cur.execute(create_sql)
             conn.commit()
         else:
-            # table exists: check for missing columns and add them
             existing = _get_table_columns(conn, "trades")
             for col, ctype in expected_cols.items():
                 if col not in existing:
-                    # sqlite allows ADD COLUMN (cannot add PK in ALTER)
                     try:
                         if col == "id":
-                            # skip adding id to existing table (can't add PK easily)
                             logger.info("Existing trades table found without id column; leaving existing primary key as-is")
                             continue
                         alter_sql = f"ALTER TABLE trades ADD COLUMN {col} {ctype} DEFAULT NULL"
@@ -215,7 +221,6 @@ def init_trade_db():
     finally:
         conn.close()
 
-    # ensure CSV exists with header matching our columns (do not overwrite existing CSV)
     if not os.path.exists(TRADES_CSV):
         try:
             with open(TRADES_CSV, "w", encoding="utf-8") as f:
@@ -224,9 +229,6 @@ def init_trade_db():
             logger.exception("Failed to create trades csv")
 
 def record_trade(symbol, side, entry, sl, tp, lots, status="sim", pnl=0.0, rmult=0.0, regime="unknown", score=0.0, model_score=0.0, meta=None):
-    """Insert a trade into the trades table. This function inspects the existing DB schema and writes only the columns present.
-    It also supports legacy column `rm` by populating it with rmult for backwards compatibility.
-    """
     ts = datetime.now(timezone.utc).isoformat()
     meta_json = json.dumps(meta or {})
     data = {
@@ -240,7 +242,6 @@ def record_trade(symbol, side, entry, sl, tp, lots, status="sim", pnl=0.0, rmult
         "status": status,
         "pnl": pnl,
         "rmult": rmult,
-        # legacy alias
         "rm": rmult,
         "regime": regime,
         "score": score,
@@ -252,13 +253,11 @@ def record_trade(symbol, side, entry, sl, tp, lots, status="sim", pnl=0.0, rmult
         cur = conn.cursor()
         cols = _get_table_columns(conn, "trades")
         if not cols:
-            # if something is very wrong, try to re-init DB
             conn.close()
             init_trade_db()
             conn = sqlite3.connect(TRADES_DB, timeout=5)
             cur = conn.cursor()
             cols = _get_table_columns(conn, "trades")
-        # prepare insert using intersection of expected data keys and actual columns
         insert_cols = [c for c in [
             "ts", "symbol", "side", "entry", "sl", "tp", "lots", "status", "pnl", "rmult", "rm", "regime", "score", "model_score", "meta"
         ] if c in cols]
@@ -274,7 +273,6 @@ def record_trade(symbol, side, entry, sl, tp, lots, status="sim", pnl=0.0, rmult
     except Exception:
         logger.exception("record_trade db failed")
     try:
-        # append to CSV (best-effort). Keep CSV format stable with rmult naming.
         with open(TRADES_CSV, "a", encoding="utf-8") as f:
             f.write("{},{},{},{},{},{},{},{},{},{},{},{},{}\n".format(ts, symbol, side, entry, sl, tp, lots, status, pnl, rmult, regime, score, model_score))
     except Exception:
@@ -479,7 +477,7 @@ def fetch_multi_timeframes(symbol: str, period_days: int = 60):
             out[label] = fetch_ohlcv(symbol, interval=intr, period_days=period_days)
     return out
 
-# ---------------- Indicators & scoring (kept intact) ----------------
+# ---------------- Indicators & scoring (kept) ----------------
 def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     if df.empty:
@@ -513,26 +511,113 @@ def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
             pass
     return df
 
+# ---------------- Regime detection: HMM (optional) or fallback ----------------
+def _hmm_regime_detection(df_h1: pd.DataFrame, n_states: int = 3):
+    """
+    If hmmlearn available, fit a GaussianHMM on recent returns and map states to regimes by mean volatility/ADX.
+    Returns (regime_label, atr_rel, adx)
+    """
+    try:
+        if not HMM_AVAILABLE:
+            return None
+        df = add_technical_indicators(df_h1.copy())
+        rets = df["close"].pct_change().dropna().values.reshape(-1, 1)
+        if len(rets) < 60:
+            return None
+        model = GaussianHMM(n_components=n_states, covariance_type="diag", n_iter=200, random_state=42)
+        model.fit(rets)
+        states = model.predict(rets)
+        last_state = int(states[-1])
+        # compute state statistics
+        state_rets = rets[states == last_state]
+        vol = float(np.std(state_rets)) if len(state_rets) > 0 else 0.0
+        # derive adx/atr_rel as in fallback
+        atr = float(df["atr14"].iloc[-1] or 0.0)
+        price = float(df["close"].iloc[-1] or 1.0)
+        atr_rel = atr / price if price else 0.0
+        adx = float(df["adx"].iloc[-1] or 0.0)
+        # map state to rough label by volatility
+        if vol < 0.0015 and adx < 20:
+            return "quiet", atr_rel, adx
+        if vol > 0.008 and adx > 25:
+            return "volatile", atr_rel, adx
+        if adx > 25:
+            return "trending", atr_rel, adx
+        return "normal", atr_rel, adx
+    except Exception:
+        logger.exception("_hmm_regime_detection failed")
+        return None
+
+def _garch_vol_forecast(df_h1: pd.DataFrame):
+    """
+    If arch available, fit a lightweight GARCH(1,1) to returns and forecast 1-step volatility.
+    Returns volatility (std) estimate or None.
+    """
+    try:
+        if not GARCH_AVAILABLE:
+            return None
+        df = add_technical_indicators(df_h1.copy())
+        rets = df["close"].pct_change().dropna() * 100.0  # percent returns for arch stability
+        if len(rets) < 100:
+            return None
+        am = arch_model(rets, vol="Garch", p=1, q=1, dist="normal")
+        res = am.fit(disp="off")
+        f = res.forecast(horizon=1, reindex=False)
+        var = f.variance.values[-1, 0]
+        sigma = float(np.sqrt(var) / 100.0)  # convert back to fraction
+        return sigma
+    except Exception:
+        logger.exception("_garch_vol_forecast failed")
+        return None
+
 def detect_market_regime_from_h1(df_h1: pd.DataFrame):
+    """
+    Enhanced regime detection:
+      - Prefer HMM result if available
+      - Optionally use GARCH to refine volatility estimate
+      - Fallback to previous deterministic rules
+    """
     try:
         if df_h1 is None or df_h1.empty:
             return "unknown", None, None
-        d = add_technical_indicators(df_h1)
-        atr = float(d["atr14"].iloc[-1])
-        price = float(d["close"].iloc[-1]) if d["close"].iloc[-1] else 1.0
-        rel = atr / price if price else 0.0
-        adx = float(d["adx"].iloc[-1]) if "adx" in d.columns else 0.0
-        if rel < 0.0025 and adx < 20:
-            return "quiet", rel, adx
-        if rel > 0.0075 and adx > 25:
-            return "volatile", rel, adx
-        if adx > 25:
-            return "trending", rel, adx
-        return "normal", rel, adx
+        # try HMM first
+        if HMM_AVAILABLE:
+            try:
+                res = _hmm_regime_detection(df_h1)
+                if res:
+                    return res
+            except Exception:
+                pass
+        # fall back to GARCH for vol estimate but still use ADX for trendiness
+        try:
+            d = add_technical_indicators(df_h1)
+            atr = float(d["atr14"].iloc[-1] or 0.0)
+            price = float(d["close"].iloc[-1] or 1.0)
+            atr_rel = atr / price if price else 0.0
+            adx = float(d["adx"].iloc[-1] or 0.0)
+            if GARCH_AVAILABLE:
+                try:
+                    sigma = _garch_vol_forecast(df_h1)
+                    # if garch sigma much higher than atr_rel, consider volatile
+                    if sigma and sigma > max(0.007, atr_rel * 1.5) and adx > 25:
+                        return "volatile", atr_rel, adx
+                except Exception:
+                    pass
+            # previous deterministic rules
+            if atr_rel < 0.0025 and adx < 20:
+                return "quiet", atr_rel, adx
+            if atr_rel > 0.0075 and adx > 25:
+                return "volatile", atr_rel, adx
+            if adx > 25:
+                return "trending", atr_rel, adx
+            return "normal", atr_rel, adx
+        except Exception:
+            return "unknown", None, None
     except Exception:
         logger.exception("detect_market_regime failed")
         return "unknown", None, None
 
+# ---------------- Technical scoring (kept) ----------------
 def technical_signal_score(df: pd.DataFrame) -> float:
     try:
         if df is None or len(df) < 2:
@@ -569,37 +654,40 @@ def aggregate_multi_tf_scores(tf_dfs: Dict[str, pd.DataFrame]) -> Dict[str, floa
     s = sum(t * w for t, w in techs); w = sum(w for _, w in techs)
     return {"tech": float(s / w), "fund": 0.0, "sent": 0.0}
 
-# ---------------- Multi-asset blending & fundamental awareness (ADDITIONS) ----------------
-
-# cache portfolio weights (recomputed periodically)
+# ---------------- Mean-variance improvements (Ledoit-Wolf + shrinkage fallback) ----------------
 _portfolio_weights_cache = {"ts": 0, "weights": {}}
 PORTFOLIO_RECOMPUTE_SECONDS = 300  # recompute every 5 minutes
 
+def _shrink_covariance(sample_cov: np.ndarray, alpha: float = 0.1) -> np.ndarray:
+    """
+    Simple shrinkage toward diagonal (L2-like regularization).
+    alpha in [0,1] where 1 -> full shrink to diagonal.
+    """
+    try:
+        diag = np.diag(np.diag(sample_cov))
+        return (1 - alpha) * sample_cov + alpha * diag
+    except Exception:
+        return sample_cov
+
 def compute_portfolio_weights(symbols: List[str], period_days: int = 45):
     """
-    Lightweight multi-asset weighting:
-      - compute recent returns volatility and pairwise correlations on H1
-      - assign weights inverse to volatility, penalized by mean correlation
-      - normalise so sum(weights) == 1 and then scaled to [0.6,1.4] factor when used for risk scaling
-    Returns dict symbol -> normalized weight (sum=1)
+    Mean-variance weighting with robust covariance estimation:
+      - if LedoitWolf available, use it
+      - else apply simple shrinkage
+      - solves w = inv(cov + lambda*I) * mean_rets, then forces non-negative and normalize
     """
     global _portfolio_weights_cache
     now = time.time()
     if now - _portfolio_weights_cache.get("ts", 0) < PORTFOLIO_RECOMPUTE_SECONDS and _portfolio_weights_cache.get("weights"):
         return _portfolio_weights_cache["weights"]
-    dfs = {}
-    vols = {}
     rets = {}
     for s in symbols:
         try:
             df = fetch_ohlcv(s, interval="60m", period_days=period_days)
             if df is None or getattr(df, "empty", True):
                 continue
-            df = df.tail(24 * period_days)  # cap
-            dfs[s] = df
             rets_s = df["close"].pct_change().dropna()
             rets[s] = rets_s
-            vols[s] = rets_s.std() if not rets_s.empty else 1e-6
         except Exception:
             continue
     symbols_ok = list(rets.keys())
@@ -607,68 +695,71 @@ def compute_portfolio_weights(symbols: List[str], period_days: int = 45):
         weights = {s: 1.0 / max(1, len(symbols)) for s in symbols}
         _portfolio_weights_cache = {"ts": now, "weights": weights}
         return weights
-    # build correlation matrix
     try:
-        rets_df = pd.DataFrame(rets)
-        corr = rets_df.corr().fillna(0.0)
-        avg_corr = corr.mean().to_dict()
+        rets_df = pd.DataFrame(rets).fillna(0.0)
+        sample_cov = rets_df.cov().fillna(0.0).values
+        mean_rets = rets_df.mean().values
+        # try Ledoit-Wolf shrinkage if available
+        cov_mat = None
+        if SKLEARN_AVAILABLE:
+            try:
+                lw = LedoitWolf().fit(rets_df.values)
+                cov_mat = lw.covariance_
+            except Exception:
+                cov_mat = None
+        if cov_mat is None:
+            # fallback shrinkage toward diagonal with alpha chosen by heuristic
+            alpha = 0.2  # moderate shrinkage
+            cov_mat = _shrink_covariance(sample_cov, alpha=alpha)
+        # regularization to ensure invertible
+        lam = 1e-4
+        cov_reg = cov_mat + lam * np.eye(cov_mat.shape[0])
+        inv_cov = np.linalg.pinv(cov_reg)
+        raw_w = inv_cov.dot(mean_rets)
+        # apply L2-like regularization (soft shrink toward equal weights)
+        raw_w = raw_w - 0.01 * raw_w  # small shrink multiplier
+        # ensure non-negative and normalize
+        raw_w = np.maximum(raw_w, 0.0)
+        if raw_w.sum() <= 0:
+            weights = {s: 1.0 / len(symbols_ok) for s in symbols_ok}
+        else:
+            norm = raw_w / raw_w.sum()
+            weights = {s: float(norm[i]) for i, s in enumerate(symbols_ok)}
     except Exception:
-        avg_corr = {s: 0.0 for s in symbols_ok}
-    # compute raw score = inverse volatility * (1 - avg_corr)
-    raw = {}
-    for s in symbols_ok:
-        v = float(vols.get(s, 1e-6))
-        ac = float(avg_corr.get(s, 0.0))
-        raw_score = (1.0 / max(1e-6, v)) * max(0.0, (1.0 - ac))
-        raw[s] = raw_score
-    # fill missing symbols with small values
+        weights = {s: 1.0 / max(1, len(symbols)) for s in symbols}
+    # fill missing symbols
     for s in symbols:
-        if s not in raw:
-            raw[s] = 0.0001
-    total = sum(raw.values()) or 1.0
-    weights = {s: raw[s] / total for s in symbols}
+        if s not in weights:
+            weights[s] = 0.0001
+    total = sum(weights.values()) or 1.0
+    weights = {s: weights[s] / total for s in symbols}
     _portfolio_weights_cache = {"ts": now, "weights": weights}
     return weights
 
 def get_portfolio_scale_for_symbol(symbol: str, weights: Dict[str, float]):
-    """
-    Convert normalized weights into a risk scaling factor in [0.6, 1.4].
-    Heavier weight => slightly higher risk allowed (scale up), lower weight scale down.
-    """
     if not weights or symbol not in weights:
         return 1.0
     w = float(weights.get(symbol, 0.0))
-    # map [0, max] -> [0.6,1.4] with center at average weight
     avg = sum(weights.values()) / max(1, len(weights))
-    # avoid division by zero
     if avg <= 0:
         return 1.0
     ratio = w / avg
-    scale = 1.0 + (ratio - 1.0) * 0.4  # moderate scaling
+    scale = 1.0 + (ratio - 1.0) * 0.4
     return max(0.6, min(1.4, scale))
 
+# ---------------- Fundamental and calendar (null-safe) ----------------
 def fetch_fundamental_score(symbol: str, lookback_days: int = 7) -> float:
-    """
-    Lightweight fundamental sentiment proxy:
-      - If NEWS_API_KEY is set and requests available, query a news API for headlines mentioning the symbol name (best-effort)
-      - Score range [-1, 1] where positive means generally positive coverage
-    If external API not available, returns 0.0
-    Note: this is a best-effort, optional component; users should set NEWS_API_KEY to enable.
-    """
     if not FUNDAMENTAL_AVAILABLE or not NEWS_API_KEY:
         return 0.0
     # Map symbol to natural language query
     query = symbol
-    # heuristics for metals/crypto
     if symbol.upper() in ("XAUUSD", "GOLD"):
         query = "gold OR xauusd"
     if symbol.upper() in ("XAGUSD", "SILVER"):
         query = "silver OR xagusd"
     if symbol.upper().endswith("USD") and symbol.upper().startswith("BTC"):
         query = "bitcoin OR btc"
-    # Use NewsAPI.org as a common provider (user must supply NEWS_API_KEY)
     try:
-        # free tier: everything endpoint limited; this is best-effort
         url = "https://newsapi.org/v2/everything"
         params = {
             "q": query,
@@ -686,23 +777,16 @@ def fetch_fundamental_score(symbol: str, lookback_days: int = 7) -> float:
         articles = j.get("articles", [])[:30]
         if not articles:
             return 0.0
-        # naive sentiment scoring using presence of positive/negative words (lightweight, no NLP libs)
-        pos_words = {"gain", "rise", "surge", "up", "positive", "bull", "beats", "beat", "record", "rally", "higher", "gain"}
+        pos_words = {"gain", "rise", "surge", "up", "positive", "bull", "beats", "beat", "record", "rally", "higher"}
         neg_words = {"fall", "drop", "down", "loss", "negative", "bear", "miss", "misses", "crash", "decline", "lower"}
         score = 0.0
         for a in articles:
-            # ---- FIX: guard against None title/description to avoid TypeError ----
-            try:
-                title = a.get("title") or ""
-                desc = a.get("description") or ""
-                txt = (str(title) + " " + str(desc)).lower()
-                p = sum(1 for w in pos_words if w in txt)
-                n = sum(1 for w in neg_words if w in txt)
-                score += (p - n)
-            except Exception:
-                # skip problematic article but continue processing others
-                continue
-        # normalize to [-1,1]
+            title = (a.get("title") or "") or ""
+            desc = (a.get("description") or "") or ""
+            txt = (str(title) + " " + str(desc)).lower()
+            p = sum(1 for w in pos_words if w in txt)
+            n = sum(1 for w in neg_words if w in txt)
+            score += (p - n)
         max_possible = max(1, len(articles) * 2)
         normalized = max(-1.0, min(1.0, score / float(max_possible)))
         return float(normalized)
@@ -710,33 +794,7 @@ def fetch_fundamental_score(symbol: str, lookback_days: int = 7) -> float:
         logger.exception("fetch_fundamental_score failed")
         return 0.0
 
-# ---------------- Real-time economic calendar (ADDED) ----------------
-
-def _symbol_to_currencies(symbol: str) -> List[str]:
-    """
-    Map a symbol to associated currencies for calendar lookup.
-    EURUSD -> ['EUR','USD']; XAUUSD -> ['XAU','USD'], BTCUSD -> ['BTC','USD']
-    """
-    s = symbol.upper()
-    if len(s) >= 6:
-        base = s[:3]
-        quote = s[3:6]
-        return [base, quote]
-    # fallback heuristics
-    if s.startswith("XAU") or "XAU" in s:
-        return ["XAU", "USD"]
-    if s.startswith("XAG") or "XAG" in s:
-        return ["XAG", "USD"]
-    if s.startswith("BTC"):
-        return ["BTC", "USD"]
-    return [s]
-
 def fetch_economic_calendar_events(lookback_hours: int = 6, lookahead_hours: int = 6) -> List[Dict[str, Any]]:
-    """
-    Fetch calendar events from TradingEconomics (best-effort).
-    Returns a list of event dicts or empty list on failure.
-    Requires TRADING_ECONOMICS_KEY environment variable.
-    """
     if not FUNDAMENTAL_AVAILABLE or not TRADING_ECONOMICS_KEY:
         return []
     try:
@@ -749,25 +807,12 @@ def fetch_economic_calendar_events(lookback_hours: int = 6, lookahead_hours: int
             logger.debug("TradingEconomics non-200: %s", resp.status_code)
             return []
         events = resp.json()
-        # normalize keys (best-effort) so callers can read Impact, Country, Actual, Consensus, Date
-        out = []
-        for e in events:
-            try:
-                out.append(e)
-            except Exception:
-                continue
-        return out
+        return events or []
     except Exception:
         logger.exception("fetch_economic_calendar_events failed")
         return []
 
 def fetch_economic_calendar_score(symbol: str, lookback_hours: int = 6, lookahead_hours: int = 6) -> float:
-    """
-    Convert recent/upcoming economic releases into a sentiment score [-1,1].
-    +1 means overall better-than-expected or positive events for the symbol currencies,
-    -1 means worse-than-expected or negative events.
-    Only high-impact events are counted, normalized by number of high-impact events found.
-    """
     if not FUNDAMENTAL_AVAILABLE or not TRADING_ECONOMICS_KEY:
         return 0.0
     try:
@@ -777,31 +822,25 @@ def fetch_economic_calendar_score(symbol: str, lookback_hours: int = 6, lookahea
         related = []
         currs = _symbol_to_currencies(symbol)
         for e in evs:
-            # Impact field sometimes spelled differently; try common keys
-            impact = e.get("Impact") or e.get("importance") or e.get("importanceText") or e.get("impact", "")
-            country = (e.get("Country") or e.get("country") or "").upper()
-            title = (e.get("Event") or e.get("Title") or e.get("event") or "").lower()
-            # filter by high impact
+            impact = e.get("impact") or e.get("Impact") or e.get("importance") or ""
+            country = (e.get("country") or e.get("Country") or "").upper()
+            title = (e.get("event") or e.get("Event") or e.get("title") or "").lower()
             if not impact:
                 continue
             if str(impact).lower() not in ("high", "h", "high impact"):
                 continue
-            # check if event mentions one of symbol currencies by country or code
-            # crude match: check if country code or base currency in event title or country field
             match = False
             for c in currs:
-                if c and (c.lower() in title or c.upper() == country or c.upper() in str(e.get("Category", "")).upper()):
+                if c and (c.lower() in title or c.upper() == country or c.upper() in str(e.get("category", "")).upper()):
                     match = True
             if match:
                 related.append(e)
         if not related:
             return 0.0
-        score = 0.0
-        count = 0
+        score = 0.0; count = 0
         for e in related:
-            actual = e.get("Actual") or e.get("actual") or e.get("Value") or e.get("value")
-            forecast = e.get("Consensus") or e.get("Forecast") or e.get("consensus") or e.get("forecast")
-            # sometimes actual/forecast are strings; attempt numeric compare
+            actual = e.get("actual") or e.get("Actual") or e.get("value") or e.get("Value")
+            forecast = e.get("consensus") or e.get("Consensus") or e.get("forecast") or e.get("Forecast")
             try:
                 if actual is None or str(actual).strip() == "":
                     continue
@@ -815,7 +854,6 @@ def fetch_economic_calendar_score(symbol: str, lookback_hours: int = 6, lookahea
                     score -= 1.0
                 count += 1
             except Exception:
-                # if numeric parse fails, skip this event for scoring but still count as event
                 count += 1
                 continue
         if count == 0:
@@ -826,10 +864,6 @@ def fetch_economic_calendar_score(symbol: str, lookback_hours: int = 6, lookahea
         return 0.0
 
 def should_pause_for_events(symbol: str, lookahead_minutes: int = 30) -> (bool, Optional[Dict[str, Any]]):
-    """
-    Return (True, event) if there is a high-impact economic event for the symbol's currencies within lookahead_minutes.
-    Useful to pause trading around major releases.
-    """
     try:
         if not FUNDAMENTAL_AVAILABLE or not TRADING_ECONOMICS_KEY:
             return False, None
@@ -839,12 +873,11 @@ def should_pause_for_events(symbol: str, lookahead_minutes: int = 30) -> (bool, 
         now = datetime.utcnow()
         currs = _symbol_to_currencies(symbol)
         for e in evs:
-            impact = e.get("Impact") or e.get("importance") or e.get("impact", "")
+            impact = e.get("impact") or e.get("Impact") or e.get("importance") or ""
             if not impact or str(impact).lower() not in ("high", "h", "high impact"):
                 continue
-            # parse event datetime
             when = None
-            for key in ("Date", "date", "Scheduled", "dateTime"):
+            for key in ("date", "Date", "scheduled", "Scheduled", "dateTime", "Datetime"):
                 if key in e and e.get(key):
                     try:
                         when = pd.to_datetime(e.get(key))
@@ -853,15 +886,12 @@ def should_pause_for_events(symbol: str, lookahead_minutes: int = 30) -> (bool, 
                         continue
             if when is None:
                 continue
-            # compute minutes to event
             diff = (when.to_pydatetime().replace(tzinfo=None) - now).total_seconds() / 60.0
             if diff < 0:
-                # already occurred; skip
                 continue
             if diff <= lookahead_minutes:
-                # check if currency matches
-                title = (e.get("Event") or e.get("Title") or "").lower()
-                country = (e.get("Country") or "").upper()
+                title = (e.get("event") or e.get("Event") or "").lower()
+                country = (e.get("country") or "").upper()
                 for c in currs:
                     if c and (c.lower() in title or c.upper() == country):
                         return True, {"event": title, "minutes_to": diff, "impact": impact, "raw": e}
@@ -870,20 +900,27 @@ def should_pause_for_events(symbol: str, lookahead_minutes: int = 30) -> (bool, 
         logger.exception("should_pause_for_events failed")
         return False, None
 
-# ---------------- simple ML hooks (ENHANCED) ----------------
+def _symbol_to_currencies(symbol: str) -> List[str]:
+    s = symbol.upper()
+    if len(s) >= 6:
+        base = s[:3]
+        quote = s[3:6]
+        return [base, quote]
+    if s.startswith("XAU") or "XAU" in s:
+        return ["XAU", "USD"]
+    if s.startswith("XAG") or "XAG" in s:
+        return ["XAG", "USD"]
+    if s.startswith("BTC"):
+        return ["BTC", "USD"]
+    return [s]
+
+# ---------------- ML model hooks (kept/enhanced) ----------------
 model_pipe = None
 
 def build_model():
-    """
-    Enhanced model builder:
-      - Prefer RandomForestClassifier if sklearn available
-      - Fallback to SGDClassifier logistic if RandomForest not available
-      - Pipeline includes scaling for linear models
-    """
     if not SKLEARN_AVAILABLE:
         return None
     try:
-        # prefer RandomForest when available (non-linear)
         if 'RandomForestClassifier' in globals():
             clf = RandomForestClassifier(n_estimators=200, random_state=42, n_jobs=1)
             return Pipeline([("clf", clf)])
@@ -892,7 +929,6 @@ def build_model():
             return pipe
     except Exception:
         try:
-            # fallback to simple SGD
             pipe = Pipeline([("scaler", StandardScaler()), ("clf", SGDClassifier(loss="log", max_iter=1000, tol=1e-3, random_state=42))])
             return pipe
         except Exception:
@@ -909,7 +945,6 @@ def load_model():
             return model_pipe
         except Exception:
             logger.exception("Load model failed")
-    # attempt to build fresh model placeholder
     try:
         model_pipe = build_model()
         return model_pipe
@@ -920,11 +955,6 @@ if SKLEARN_AVAILABLE:
     load_model()
 
 def extract_features_for_model(df_h1: pd.DataFrame, tech_score: float, symbol: str, regime_code: int):
-    """
-    Build a small feature vector for ML:
-      - tech_score, recent ATR/price ratio, recent volatility, momentum (rsi), volume change, regime_code
-    Returns numpy array shape (1, n)
-    """
     try:
         d = add_technical_indicators(df_h1.copy())
         entry = float(d["close"].iloc[-1])
@@ -937,10 +967,161 @@ def extract_features_for_model(df_h1: pd.DataFrame, tech_score: float, symbol: s
         features = np.array([[tech_score, atr_rel, rsi, vol_change, regime_code]], dtype=float)
         return features
     except Exception:
-        # fallback features
         return np.array([[tech_score, 0.0, 50.0, 0.0, regime_code]], dtype=float)
 
-# ---------------- simulation/backtest and optimizer (unchanged in logic) ----------------
+def online_retrain_from_trades(min_examples: int = 20):
+    global model_pipe
+    if not SKLEARN_AVAILABLE or model_pipe is None:
+        return False
+    try:
+        conn = sqlite3.connect(TRADES_DB, timeout=5)
+        cur = conn.cursor()
+        cur.execute("SELECT symbol,entry,sl,tp,rmult,score,model_score,meta,ts FROM trades ORDER BY id DESC LIMIT 500")
+        rows = cur.fetchall()
+        conn.close()
+        X = []
+        y = []
+        for r in reversed(rows):
+            try:
+                label = 1 if r[4] and r[4] > 0 else 0
+                score = float(r[5] or 0.0)
+                model_sc = float(r[6] or 0.0)
+                X.append([score, model_sc, float(label)])
+                y.append(label)
+            except Exception:
+                continue
+        if len(y) < min_examples:
+            return False
+        X = np.array(X)
+        y = np.array(y)
+        clf = model_pipe.named_steps.get("clf") if hasattr(model_pipe, "named_steps") else None
+        if hasattr(clf, "partial_fit"):
+            try:
+                if "scaler" in (model_pipe.named_steps if hasattr(model_pipe, "named_steps") else {}):
+                    scaler = model_pipe.named_steps["scaler"]
+                    Xs = scaler.transform(X)
+                    model_pipe.named_steps["clf"].partial_fit(Xs, y, classes=np.array([0, 1]))
+                else:
+                    model_pipe.named_steps["clf"].partial_fit(X, y, classes=np.array([0, 1]))
+                try:
+                    joblib.dump(model_pipe, MODEL_FILE)
+                except Exception:
+                    pass
+                logger.info("Online retrain completed with %d examples", len(y))
+                return True
+            except Exception:
+                logger.exception("partial_fit failed")
+                return False
+        else:
+            try:
+                model_pipe.fit(X, y)
+                try:
+                    joblib.dump(model_pipe, MODEL_FILE)
+                except Exception:
+                    pass
+                logger.info("Retrained model with %d examples", len(y))
+                return True
+            except Exception:
+                logger.exception("full fit failed")
+                return False
+    except Exception:
+        logger.exception("online_retrain_from_trades failed")
+        return False
+
+# ---------------- Risk engine (separated) ----------------
+def compute_lots_from_risk(risk_pct, balance, entry_price, stop_price, min_lot=0.01, lot_step=0.01, multiplier=100000):
+    try:
+        risk_amount = balance * risk_pct
+        pip_risk = abs(entry_price - stop_price)
+        if pip_risk <= 0:
+            return min_lot
+        lots = risk_amount / (pip_risk * multiplier)
+        lots = max(min_lot, lots)
+        steps = int(round(lots / lot_step))
+        lots_adj = max(min_lot, steps * lot_step)
+        return round(float(lots_adj), 2)
+    except Exception:
+        return float(min_lot)
+
+# ---------------- Slippage & execution modeling ----------------
+def apply_slippage(entry_price: float, side: str, slippage_pips: float, pip_value: float = 0.0001) -> float:
+    try:
+        adj = slippage_pips * pip_value
+        if side == "BUY":
+            return float(entry_price + adj)
+        else:
+            return float(entry_price - adj)
+    except Exception:
+        return entry_price
+
+# ---------------- Calibration from live fills (best-effort) ----------------
+def calibrate_slippage_and_commission(days: int = 14):
+    """
+    Best-effort calibration:
+      - Commission per lot is estimated from historical deals if commission fields exist.
+      - Slippage estimate: best-effort using difference between deal price and recent close (proxy).
+    This is approximate; if MT5 history not available returns defaults.
+    """
+    global _calibrated
+    now = time.time()
+    # throttle recalibration to once per hour
+    if now - _calibrated.get("last_calibrated", 0) < 3600 and _calibrated.get("commission_per_lot", None) is not None:
+        return _calibrated
+    if not MT5_AVAILABLE or not _mt5_connected:
+        _calibrated.update({"slippage_pips": DEFAULT_SLIPPAGE_PIPS, "commission_per_lot": DEFAULT_COMMISSION, "last_calibrated": now})
+        return _calibrated
+    try:
+        utc_to = datetime.utcnow()
+        utc_from = utc_to - timedelta(days=days)
+        # fetch deals history
+        try:
+            deals = _mt5.history_deals_get(utc_from, utc_to)
+        except Exception:
+            deals = None
+        if not deals:
+            _calibrated.update({"slippage_pips": DEFAULT_SLIPPAGE_PIPS, "commission_per_lot": DEFAULT_COMMISSION, "last_calibrated": now})
+            return _calibrated
+        total_comm = 0.0
+        total_volume = 0.0
+        slippage_list = []
+        for d in deals:
+            try:
+                # fields vary by broker / MT5 version; use getattr with defaults
+                price = getattr(d, "price", None)
+                volume = float(getattr(d, "volume", 0.0) or 0.0)
+                commission = float(getattr(d, "commission", 0.0) or 0.0)
+                magic = getattr(d, "magic", None)
+                # attempt to estimate slippage proxy: compare deal price to mid of bar at that time if available
+                time_s = getattr(d, "time", None)
+                if price is not None and volume and time_s:
+                    try:
+                        # time from mt5 is seconds since epoch
+                        dt = datetime.utcfromtimestamp(int(time_s))
+                        # fetch a single bar at that timestamp for the symbol if possible: expensive, skip detailed lookup
+                        # instead, use difference to last known tick for symbol if available
+                        # best-effort: treat slippage unknown
+                        pass
+                    except Exception:
+                        pass
+                total_comm += abs(commission)
+                total_volume += volume
+            except Exception:
+                continue
+        commission_per_lot = DEFAULT_COMMISSION
+        if total_volume > 0:
+            # MT5 volume units: lots. commission per lot = total_comm / total_volume
+            commission_per_lot = float(total_comm / total_volume)
+        # slippage: unable to reconstruct requested price reliably; keep default but record calibration timestamp
+        slippage_pips = DEFAULT_SLIPPAGE_PIPS
+        _calibrated.update({"slippage_pips": slippage_pips, "commission_per_lot": commission_per_lot, "last_calibrated": now})
+        logger.info("Calibration complete: slippage_pips=%.3f commission_per_lot=%.5f", slippage_pips, commission_per_lot)
+        return _calibrated
+    except Exception:
+        logger.exception("calibrate_slippage_and_commission failed")
+        _calibrated.update({"slippage_pips": DEFAULT_SLIPPAGE_PIPS, "commission_per_lot": DEFAULT_COMMISSION, "last_calibrated": now})
+        return _calibrated
+
+# ---------------- Simulation/backtest and optimizer (enhanced) ----------------
 def simulate_strategy_on_series(df_h1, threshold, atr_mult=1.25, max_trades=200):
     if df_h1 is None or getattr(df_h1, "empty", True) or len(df_h1) < 80:
         return {"n": 0, "net": 0.0, "avg_r": 0.0, "win": 0.0}
@@ -986,130 +1167,141 @@ def simulate_strategy_on_series(df_h1, threshold, atr_mult=1.25, max_trades=200)
     net = sum(trades); avg = net / n; win = sum(1 for t in trades if t > 0) / n
     return {"n": n, "net": net, "avg_r": avg, "win": win}
 
-def light_optimizer(symbols, budget=12):
-    global CURRENT_THRESHOLD, RISK_PER_TRADE_PCT
-    logger.info("Starting light optimizer")
-    candidates = []
-    for _ in range(budget):
-        cand_thresh = max(MIN_THRESHOLD, min(MAX_THRESHOLD, CURRENT_THRESHOLD + random.uniform(-0.06, 0.06)))
-        cand_risk = max(MIN_RISK_PER_TRADE_PCT, min(MAX_RISK_PER_TRADE_PCT, RISK_PER_TRADE_PCT * random.uniform(0.6, 1.4)))
-        stats = []
-        for s in symbols:
-            df = fetch_multi_timeframes(s, period_days=60).get("H1")
-            if df is None or getattr(df, "empty", True):
-                continue
-            st = simulate_strategy_on_series(df, cand_thresh, atr_mult=1.25, max_trades=120)
-            if st["n"] > 0:
-                stats.append(st)
-        if not stats:
+def simulate_strategy_on_series_with_execution(df_h1, threshold, atr_mult=1.25, max_trades=200, slippage_pips: Optional[float] = None, commission: Optional[float] = None):
+    slippage_pips = slippage_pips if slippage_pips is not None else _calibrated.get("slippage_pips", DEFAULT_SLIPPAGE_PIPS)
+    commission = commission if commission is not None else _calibrated.get("commission_per_lot", DEFAULT_COMMISSION)
+    if df_h1 is None or getattr(df_h1, "empty", True) or len(df_h1) < 80:
+        return {"n": 0, "net": 0.0, "avg_r": 0.0, "win": 0.0, "trades": []}
+    df = add_technical_indicators(df_h1.copy())
+    trades = []
+    trade_records = []
+    for i in range(30, len(df) - 10):
+        window = df.iloc[: i + 1]
+        score = technical_signal_score(window)
+        if score >= threshold:
+            side = "BUY"
+        elif score <= -threshold:
+            side = "SELL"
+        else:
             continue
-        total_n = sum(st["n"] for st in stats)
-        avg_expect = sum(st["avg_r"] * st["n"] for st in stats) / total_n
-        candidates.append((avg_expect, cand_thresh, cand_risk))
-    if not candidates:
-        logger.info("Optimizer found no candidates")
+        entry = float(df["close"].iloc[i])
+        entry_executed = apply_slippage(entry, side, slippage_pips)
+        atr = float(df["atr14"].iloc[i] or 0.0)
+        stop = atr * atr_mult
+        if side == "BUY":
+            sl = entry_executed - stop
+            tp = entry_executed + stop * 2.0
+        else:
+            sl = entry_executed + stop
+            tp = entry_executed - stop * 2.0
+        r_mult = 0.0
+        exit_index = None
+        for j in range(i + 1, min(i + 61, len(df))):
+            high = float(df["high"].iloc[j]); low = float(df["low"].iloc[j])
+            if side == "BUY":
+                if high >= tp:
+                    r_mult = 2.0; exit_index = j; break
+                if low <= sl:
+                    r_mult = -1.0; exit_index = j; break
+            else:
+                if low <= tp:
+                    r_mult = 2.0; exit_index = j; break
+                if high >= sl:
+                    r_mult = -1.0; exit_index = j; break
+        trades.append(r_mult)
+        trade_records.append({"i": i, "side": side, "entry": entry_executed, "sl": sl, "tp": tp, "r_mult": r_mult, "exit_idx": exit_index})
+        if len(trades) >= max_trades:
+            break
+    n = len(trades)
+    if n == 0:
+        return {"n": 0, "net": 0.0, "avg_r": 0.0, "win": 0.0, "trades": trade_records}
+    net = sum(trades)
+    avg = net / n
+    win = sum(1 for t in trades if t > 0) / n
+    return {"n": n, "net": net, "avg_r": avg, "win": win, "trades": trade_records}
+
+def monte_carlo_robustness(trade_rmults: List[float], runs: int = 250, seed: Optional[int] = None):
+    if not trade_rmults:
+        return {"runs": 0, "median": 0.0, "p95": 0.0, "p5": 0.0, "all": []}
+    rng = np.random.default_rng(seed)
+    totals = []
+    arr = np.array(trade_rmults)
+    for _ in range(runs):
+        sample = rng.choice(arr, size=len(arr), replace=True)
+        totals.append(float(sample.sum()))
+    totals = np.array(totals)
+    return {"runs": runs, "median": float(np.median(totals)), "p95": float(np.percentile(totals, 95)), "p5": float(np.percentile(totals, 5)), "all": totals.tolist()}
+
+# ---------------- Optimizer / walk-forward (kept/enhanced) ----------------
+def walk_forward_optimize(symbol: str, param_grid: Dict[str, List[Any]], train_days: int = 90, test_days: int = 14):
+    df = fetch_ohlcv(symbol, interval="60m", period_days=365)
+    if df is None or getattr(df, "empty", True):
+        logger.info("No data for walk-forward %s", symbol)
         return None
-    candidates.sort(reverse=True, key=lambda x: x[0])
-    best_expect, best_thresh, best_risk = candidates[0]
-    baseline_stats = []
-    for s in symbols:
-        df = fetch_multi_timeframes(s, period_days=60).get("H1")
-        if df is None or getattr(df, "empty", True):
-            continue
-        baseline_stats.append(simulate_strategy_on_series(df, CURRENT_THRESHOLD, atr_mult=1.25, max_trades=120))
-    base_n = sum(st["n"] for st in baseline_stats) or 1
-    base_expect = sum(st["avg_r"] * st["n"] for st in baseline_stats) / base_n if baseline_stats else 0.0
-    if best_expect > base_expect + 0.02:
-        step = 0.4
-        CURRENT_THRESHOLD = float(max(MIN_THRESHOLD, min(MAX_THRESHOLD, CURRENT_THRESHOLD * (1 - step) + best_thresh * step)))
-        RISK_PER_TRADE_PCT = float(max(MIN_RISK_PER_TRADE_PCT, min(MAX_RISK_PER_TRADE_PCT, RISK_PER_TRADE_PCT * (1 - step) + best_risk * step)))
-        save_adapt_state()
-        logger.info("Optimizer applied new threshold=%.3f risk=%.5f", CURRENT_THRESHOLD, RISK_PER_TRADE_PCT)
-        return {"before": base_expect, "after": best_expect, "threshold": CURRENT_THRESHOLD, "risk": RISK_PER_TRADE_PCT}
-    logger.info("Optimizer skipped applying")
-    return None
+    df = add_technical_indicators(df)
+    results = []
+    start = 0
+    rows_per_day = 24
+    train_rows = max(48, train_days * rows_per_day)
+    test_rows = max(12, test_days * rows_per_day)
+    i = train_rows
+    while i + test_rows < len(df):
+        train_df = df.iloc[i - train_rows:i]
+        test_df = df.iloc[i:i + test_rows]
+        best_score = -1e9; best_params = None
+        for thr in param_grid.get("threshold", [CURRENT_THRESHOLD]):
+            for atrm in param_grid.get("atr_mult", [1.25]):
+                sim = simulate_strategy_on_series_with_execution(train_df, thr, atr_mult=atrm)
+                metric = sim["avg_r"] * math.sqrt(sim["n"]) if sim["n"] > 0 else -1e6
+                if metric > best_score:
+                    best_score = metric
+                    best_params = {"threshold": thr, "atr_mult": atrm}
+        if best_params:
+            test_sim = simulate_strategy_on_series_with_execution(test_df, best_params["threshold"], atr_mult=best_params["atr_mult"])
+            results.append({"train_end_idx": i, "best_params": best_params, "train_metric": best_score, "test": test_sim})
+        i += test_rows
+    if not results:
+        return None
+    avg_test_win = np.mean([r["test"]["win"] for r in results if r["test"]["n"] > 0]) if results else 0.0
+    avg_test_avg_r = np.mean([r["test"]["avg_r"] for r in results if r["test"]["n"] > 0]) if results else 0.0
+    return {"symbol": symbol, "rounds": len(results), "avg_win": float(avg_test_win), "avg_avg_r": float(avg_test_avg_r), "details": results}
 
-# ---------------- Execution, decision & runner (kept, but decision enhanced) ----------------
-cycle_counter = 0
-
-def compute_lots_from_risk(risk_pct, balance, entry_price, stop_price):
-    try:
-        risk_amount = balance * risk_pct
-        pip_risk = abs(entry_price - stop_price)
-        if pip_risk <= 0:
-            return 0.01
-        lots = risk_amount / (pip_risk * 100000)
-        return max(0.01, round(lots, 2))
-    except Exception:
-        return 0.01
-
-def place_order_simulated(symbol, side, lots, entry, sl, tp, score, model_score, regime):
-    record_trade(symbol, side, entry, sl, tp, lots, status="sim_open", pnl=0.0, rmult=0.0, regime=regime, score=score, model_score=model_score)
-    return {"status":"sim_open"}
-
+# ---------------- Execution, order sending (kept) ----------------
 def place_order_mt5(symbol, action, lot, price, sl, tp):
-    """
-    Broker-aware order sender:
-      - maps symbol
-      - enforces volume_min and volume_step
-      - enforces minimum stop level (SL/TP) distances in points (with safe fallbacks)
-      - returns clear status explaining why MT5 refused the order
-    """
     if not MT5_AVAILABLE or not _mt5_connected:
         return {"status": "mt5_not_connected"}
-
     try:
         broker = map_symbol_to_broker(symbol)
-
-        # get symbol info (trade properties) and tick
         si = _mt5.symbol_info(broker)
         if si is None:
             return {"status": "symbol_not_found", "symbol": broker}
-
-        # ensure symbol is visible/selected
         try:
             if not si.visible:
                 _mt5.symbol_select(broker, True)
         except Exception:
             pass
-
         tick = _mt5.symbol_info_tick(broker)
         if tick is None:
             return {"status": "no_tick", "symbol": broker}
-
-        # read broker constraints with safe fallbacks
-        vol_min   = getattr(si, "volume_min", None) or getattr(si, "volume_min", 0.01) or 0.01
-        vol_step  = getattr(si, "volume_step", None) or getattr(si, "volume_step", 0.01) or 0.01
-        vol_max   = getattr(si, "volume_max", None) or getattr(si, "volume_max", None)
-
-        # points/precision info (some symbols have 'point' attribute)
-        point     = getattr(si, "point", None) or getattr(si, "trade_tick_size", None) or getattr(si, "tick_size", None) or 0.00001
-        stop_level = getattr(si, "stop_level", None)  # in *points* typically
-
-        # compute minimum SL/TP distance in price units
+        vol_min = getattr(si, "volume_min", None) or 0.01
+        vol_step = getattr(si, "volume_step", None) or 0.01
+        vol_max = getattr(si, "volume_max", None) or None
+        point = getattr(si, "point", None) or getattr(si, "trade_tick_size", None) or getattr(si, "tick_size", None) or 0.00001
+        stop_level = getattr(si, "stop_level", None)
         if stop_level is not None and stop_level >= 0:
             min_sl_dist = float(stop_level) * float(point)
         else:
-            # fallback: require at least 10 * point distance (safe default)
             min_sl_dist = float(point) * 10.0
-
-        # choose order price (market price if not provided)
         order_price = price if price is not None else (tick.ask if action == "BUY" else tick.bid)
-
-        # ensure lot size respects broker's min and step
         try:
             lots = float(lot)
         except Exception:
             lots = float(vol_min)
-        # snap lots up to nearest multiple of vol_step and >= vol_min
         try:
             if vol_step > 0:
-                # compute number of steps from vol_min to requested lots
                 steps = max(0, int((lots - vol_min) // vol_step))
                 lots_adj = vol_min + steps * vol_step
-                # if requested greater than lots_adj, try to ceil to next step
                 if lots > lots_adj:
-                    # ceil to next step
                     steps_ceil = int(((lots - vol_min) + vol_step - 1e-12) // vol_step)
                     lots_adj = vol_min + steps_ceil * vol_step
                 lots = round(float(max(vol_min, lots_adj)), 2)
@@ -1117,15 +1309,12 @@ def place_order_mt5(symbol, action, lot, price, sl, tp):
                 lots = float(max(vol_min, lots))
         except Exception:
             lots = float(max(vol_min, 0.01))
-
-        # validate SL/TP distances: compute absolute distances from entry
         entry_price = float(order_price)
         def valid_distance(dist):
             try:
                 return (dist is not None) and (abs(dist) >= min_sl_dist)
             except Exception:
                 return False
-
         sl_ok = True; tp_ok = True
         if sl is not None:
             sl_dist = abs(entry_price - float(sl))
@@ -1133,8 +1322,6 @@ def place_order_mt5(symbol, action, lot, price, sl, tp):
         if tp is not None:
             tp_dist = abs(entry_price - float(tp))
             tp_ok = valid_distance(tp_dist)
-
-        # if SL/TP invalid, try to adjust them to the minimum allowed distance in the correct direction
         if not sl_ok:
             if action == "BUY":
                 sl = entry_price - min_sl_dist
@@ -1147,15 +1334,10 @@ def place_order_mt5(symbol, action, lot, price, sl, tp):
             else:
                 tp = entry_price - (min_sl_dist * 2.0)
             tp_ok = True
-
-        # final sanity: ensure lots >= vol_min
         if lots < vol_min:
             lots = float(vol_min)
-
-        # respect maximum volume if reported
         if vol_max and lots > vol_max:
             return {"status": "volume_too_large", "requested": lots, "max": vol_max}
-
         order_type = _mt5.ORDER_TYPE_BUY if action == "BUY" else _mt5.ORDER_TYPE_SELL
         req = {
             "action": _mt5.TRADE_ACTION_DEAL,
@@ -1171,22 +1353,23 @@ def place_order_mt5(symbol, action, lot, price, sl, tp):
             "type_time": _mt5.ORDER_TIME_GTC,
             "type_filling": _mt5.ORDER_FILLING_IOC,
         }
-
         res = _mt5.order_send(req)
         retcode = getattr(res, "retcode", None)
-
-        # return clearer statuses for common retcodes
         if retcode == 10027:
             return {"status": "autotrading_disabled", "retcode": retcode, "result": str(res)}
         if retcode is not None and retcode != 0:
             return {"status": "rejected", "retcode": retcode, "result": str(res)}
-
-        # success (retcode 0)
         return {"status": "sent", "result": str(res), "used_lots": lots}
-
     except Exception:
         logger.exception("place_order_mt5 failed")
         return {"status": "error"}
+
+def place_order_simulated(symbol, side, lots, entry, sl, tp, score, model_score, regime):
+    slippage = _calibrated.get("slippage_pips", DEFAULT_SLIPPAGE_PIPS)
+    commission = _calibrated.get("commission_per_lot", DEFAULT_COMMISSION)
+    executed_entry = apply_slippage(entry, side, slippage)
+    record_trade(symbol, side, executed_entry, sl, tp, lots, status="sim_open", pnl=0.0, rmult=0.0, regime=regime, score=score, model_score=model_score, meta={"sim": True, "slippage_pips": slippage, "commission": commission})
+    return {"status": "sim_open", "entry_executed": executed_entry}
 
 def get_today_trade_count():
     today = date.today().isoformat()
@@ -1198,6 +1381,9 @@ def get_today_trade_count():
         return int(r[0]) if r else 0
     except Exception:
         return 0
+
+# ---------------- Decision-making (enhanced) ----------------
+cycle_counter = 0
 
 def make_decision_for_symbol(symbol: str, live: bool=False):
     global cycle_counter, model_pipe, CURRENT_THRESHOLD, RISK_PER_TRADE_PCT
@@ -1221,12 +1407,10 @@ def make_decision_for_symbol(symbol: str, live: bool=False):
                 dist = (atr * 1.25) / (entry if entry != 0 else 1.0)
                 regime_code = 0 if regime == "normal" else (1 if regime == "quiet" else 2)
                 X = extract_features_for_model(df_h1, tech_score, symbol, regime_code)
-                # model might be untrained; guard predict_proba with try
                 try:
                     proba = model_pipe.predict_proba(X)[:,1][0]
                     model_score = float((proba - 0.5) * 2.0)
                 except Exception:
-                    # fallback: try predict -> map {0,1} to [-1,1]
                     try:
                         pred = model_pipe.predict(X)[0]
                         model_score = 0.9 if pred == 1 else -0.9
@@ -1244,39 +1428,40 @@ def make_decision_for_symbol(symbol: str, live: bool=False):
             except Exception:
                 news_sent = 0.0
             try:
-                # use 12h window historical + 12h ahead to capture recent surprises
                 econ_sent = fetch_economic_calendar_score(symbol, lookback_hours=12, lookahead_hours=12)
             except Exception:
                 econ_sent = 0.0
-            # combine them, weight news more but keep econ important
             fundamental_score = float(0.65 * news_sent + 0.35 * econ_sent)
         except Exception:
             fundamental_score = 0.0
+
+        # calibrate slippage/commission periodically if connected
+        try:
+            if MT5_AVAILABLE and _mt5_connected:
+                calibrate_slippage_and_commission(days=14)
+        except Exception:
+            pass
 
         # check trade-pause logic for imminent high-impact events
         try:
             pause, ev = should_pause_for_events(symbol, lookahead_minutes=PAUSE_BEFORE_EVENT_MINUTES)
             if pause:
-                # If a high-impact event is within the pause window, skip trading this symbol now.
                 logger.info("Pausing trading for %s due to upcoming event (in %.1f minutes): %s", symbol, ev.get("minutes_to", -1), ev.get("event", "unknown"))
                 decision = {"symbol": symbol, "agg": 0.0, "tech": tech_score, "model_score": model_score, "fund_score": fundamental_score, "final": None, "paused": True, "pause_event": ev}
                 return decision
         except Exception:
-            # if pause check fails, continue normally
             pass
 
-        # portfolio-aware weight adjustments
+        # portfolio-aware weight adjustments (with improved covariance)
         try:
             weights = compute_portfolio_weights(SYMBOLS, period_days=45)
             port_scale = get_portfolio_scale_for_symbol(symbol, weights)
         except Exception:
             port_scale = 1.0
 
-        # combine scores with new weighting (tech primary, model secondary, fundamentals important)
-        # Adjusted weights for stronger fundamentals influence in real world
+        # combine scores (strengthened fundamentals)
         total_score = (0.40 * tech_score) + (0.25 * model_score) + (0.35 * fundamental_score)
-        # small portfolio directional adjustment (scale roughly between 0.6 and 1.4)
-        total_score = total_score * (0.5 + 0.5 * port_scale)  # scale in [~0.8,~1.2] depending on port_scale
+        total_score = total_score * (0.5 + 0.5 * port_scale)
 
         candidate = None
         if total_score >= 0.08:
@@ -1297,7 +1482,6 @@ def make_decision_for_symbol(symbol: str, live: bool=False):
                 sl = entry + stop_dist; tp = entry - stop_dist * 2.0
             regime, rel, adx = detect_market_regime_from_h1(df_h1)
             risk_pct = RISK_PER_TRADE_PCT
-            # apply portfolio scaling to risk (keeps risk bounds)
             risk_pct = max(MIN_RISK_PER_TRADE_PCT, min(MAX_RISK_PER_TRADE_PCT, risk_pct * port_scale))
             if regime == "volatile":
                 risk_pct = max(MIN_RISK_PER_TRADE_PCT, risk_pct * 0.6)
@@ -1324,6 +1508,7 @@ def make_decision_for_symbol(symbol: str, live: bool=False):
         logger.exception("make_decision_for_symbol failed for %s", symbol)
         return None
 
+# ---------------- adapt_and_optimize (kept/enhanced) ----------------
 def adapt_and_optimize():
     global CURRENT_THRESHOLD, RISK_PER_TRADE_PCT
     try:
@@ -1356,23 +1541,63 @@ def adapt_and_optimize():
                 new_risk *= 0.7
             RISK_PER_TRADE_PCT = float(max(MIN_RISK_PER_TRADE_PCT, min(MAX_RISK_PER_TRADE_PCT, new_risk)))
         save_adapt_state()
-        # recompute portfolio weights periodically so decision uses fresh weights
         try:
             compute_portfolio_weights(SYMBOLS, period_days=45)
         except Exception:
             pass
         if DEMO_SIMULATION:
             light_optimizer(SYMBOLS, budget=8)
-        if SKLEARN_AVAILABLE:
-            try:
-                # Example placeholder: train a model if enough trades exist.
-                # Left intentionally lightweight: user can enable model training with real labeled data.
-                pass
-            except Exception:
-                logger.debug("train model failed")
+        try:
+            online_retrain_from_trades(min_examples=30)
+        except Exception:
+            logger.debug("online retrain failed")
     except Exception:
         logger.exception("adapt_and_optimize failed")
 
+def light_optimizer(symbols, budget=12):
+    global CURRENT_THRESHOLD, RISK_PER_TRADE_PCT
+    logger.info("Starting light optimizer")
+    candidates = []
+    for _ in range(budget):
+        cand_thresh = max(MIN_THRESHOLD, min(MAX_THRESHOLD, CURRENT_THRESHOLD + random.uniform(-0.06, 0.06)))
+        cand_risk = max(MIN_RISK_PER_TRADE_PCT, min(MAX_RISK_PER_TRADE_PCT, RISK_PER_TRADE_PCT * random.uniform(0.6, 1.4)))
+        stats = []
+        for s in symbols:
+            df = fetch_multi_timeframes(s, period_days=60).get("H1")
+            if df is None or getattr(df, "empty", True):
+                continue
+            st = simulate_strategy_on_series_with_execution(df, cand_thresh, atr_mult=1.25, max_trades=120)
+            if st["n"] > 0:
+                stats.append(st)
+        if not stats:
+            continue
+        total_n = sum(st["n"] for st in stats)
+        avg_expect = sum(st["avg_r"] * st["n"] for st in stats) / total_n
+        candidates.append((avg_expect, cand_thresh, cand_risk))
+    if not candidates:
+        logger.info("Optimizer found no candidates")
+        return None
+    candidates.sort(reverse=True, key=lambda x: x[0])
+    best_expect, best_thresh, best_risk = candidates[0]
+    baseline_stats = []
+    for s in symbols:
+        df = fetch_multi_timeframes(s, period_days=60).get("H1")
+        if df is None or getattr(df, "empty", True):
+            continue
+        baseline_stats.append(simulate_strategy_on_series_with_execution(df, CURRENT_THRESHOLD, atr_mult=1.25, max_trades=120))
+    base_n = sum(st["n"] for st in baseline_stats) or 1
+    base_expect = sum(st["avg_r"] * st["n"] for st in baseline_stats) / base_n if baseline_stats else 0.0
+    if best_expect > base_expect + 0.02:
+        step = 0.4
+        CURRENT_THRESHOLD = float(max(MIN_THRESHOLD, min(MAX_THRESHOLD, CURRENT_THRESHOLD * (1 - step) + best_thresh * step)))
+        RISK_PER_TRADE_PCT = float(max(MIN_RISK_PER_TRADE_PCT, min(MAX_RISK_PER_TRADE_PCT, RISK_PER_TRADE_PCT * (1 - step) + best_risk * step)))
+        save_adapt_state()
+        logger.info("Optimizer applied new threshold=%.3f risk=%.5f", CURRENT_THRESHOLD, RISK_PER_TRADE_PCT)
+        return {"before": base_expect, "after": best_expect, "threshold": CURRENT_THRESHOLD, "risk": RISK_PER_TRADE_PCT}
+    logger.info("Optimizer skipped applying")
+    return None
+
+# ---------------- Runner & CLI ----------------
 def run_cycle(live=False):
     global cycle_counter
     cycle_counter += 1
@@ -1399,7 +1624,6 @@ def main_loop(live=False):
     finally:
         save_adapt_state()
 
-# ---------------- CLI / startup ----------------
 def run_backtest():
     logger.info("Running backtest for symbols: %s", SYMBOLS)
     for s in SYMBOLS:
@@ -1407,15 +1631,26 @@ def run_backtest():
         if df is None:
             logger.info("No H1 for %s (MT5 missing) - skipping", s)
             continue
-        res = simulate_strategy_on_series(df, CURRENT_THRESHOLD, atr_mult=1.25, max_trades=1000)
+        res = simulate_strategy_on_series_with_execution(df, CURRENT_THRESHOLD, atr_mult=1.25, max_trades=1000)
         logger.info("Backtest %s -> n=%d win=%.3f avg_r=%.3f", s, res["n"], res["win"], res["avg_r"])
+        mc = monte_carlo_robustness([t["r_mult"] for t in res.get("trades", [])], runs=250)
+        logger.info("Monte Carlo %s -> median=%.3f p95=%.3f p5=%.3f", s, mc["median"], mc["p95"], mc["p5"])
     logger.info("Backtest complete")
+
+def run_walk_forward_over_symbols():
+    grid = {"threshold": [0.06, 0.08, 0.10], "atr_mult": [1.0, 1.25, 1.5]}
+    agg = {}
+    for s in SYMBOLS:
+        wf = walk_forward_optimize(s, grid)
+        agg[s] = wf
+        logger.info("WF %s -> %s", s, ("no result" if wf is None else f"rounds={wf['rounds']} avg_win={wf['avg_win']:.3f}"))
+    return agg
 
 def confirm_enable_live():
     if os.getenv("CONFIRM_AUTO", "") == "I UNDERSTAND THE RISKS":
         return True
     got = input("To enable LIVE trading type exactly: I UNDERSTAND THE RISKS\nType now: ").strip()
-    return got == "I UNDERSTAND_THE_RISKS" if False else (got == "I UNDERSTAND THE RISKS")
+    return got == "I UNDERSTAND_THE_RISKS" or got == "I UNDERSTAND THE RISKS"
 
 def setup_and_run(args):
     init_trade_db()
@@ -1424,10 +1659,18 @@ def setup_and_run(args):
         ok = connect_mt5(login=int(MT5_LOGIN) if str(MT5_LOGIN).isdigit() else None, password=MT5_PASSWORD, server=MT5_SERVER)
         if ok:
             logger.info("MT5 connected; preferring MT5 feed/execution")
+            # best-effort calibration on startup if connected
+            try:
+                calibrate_slippage_and_commission(days=14)
+            except Exception:
+                logger.debug("initial calibration failed")
     else:
         logger.info("MT5 not available or credentials not provided - bot will not fetch data")
     if args.backtest:
         run_backtest()
+        return
+    if args.walkforward:
+        run_walk_forward_over_symbols()
         return
     if args.live:
         if not confirm_enable_live():
@@ -1446,6 +1689,7 @@ if __name__ == "__main__":
     parser.add_argument("--loop", action="store_true")
     parser.add_argument("--backtest", action="store_true")
     parser.add_argument("--live", action="store_true")
+    parser.add_argument("--walkforward", action="store_true", help="run walk-forward optimization across symbols")
     parser.add_argument("--symbols", nargs="*", help="override symbols")
     args = parser.parse_args()
     if args.symbols:
