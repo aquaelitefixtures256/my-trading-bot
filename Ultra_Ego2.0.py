@@ -680,27 +680,121 @@ def place_order_simulated(symbol, side, lots, entry, sl, tp, score, model_score,
     return {"status":"sim_open"}
 
 def place_order_mt5(symbol, action, lot, price, sl, tp):
+    """
+    Broker-aware order sender:
+      - maps symbol
+      - enforces volume_min and volume_step
+      - enforces minimum stop level (SL/TP) distances in points (with safe fallbacks)
+      - returns clear status explaining why MT5 refused the order
+    """
     if not MT5_AVAILABLE or not _mt5_connected:
         return {"status": "mt5_not_connected"}
+
     try:
         broker = map_symbol_to_broker(symbol)
+
+        # get symbol info (trade properties) and tick
+        si = _mt5.symbol_info(broker)
+        if si is None:
+            return {"status": "symbol_not_found", "symbol": broker}
+
+        # ensure symbol is visible/selected
         try:
-            si = _mt5.symbol_info(broker)
-            if si is None or not si.visible:
+            if not si.visible:
                 _mt5.symbol_select(broker, True)
         except Exception:
             pass
+
         tick = _mt5.symbol_info_tick(broker)
         if tick is None:
-            return {"status": "no_tick"}
+            return {"status": "no_tick", "symbol": broker}
+
+        # read broker constraints with safe fallbacks
+        vol_min   = getattr(si, "volume_min", None) or getattr(si, "volume_min", 0.01) or 0.01
+        vol_step  = getattr(si, "volume_step", None) or getattr(si, "volume_step", 0.01) or 0.01
+        vol_max   = getattr(si, "volume_max", None) or getattr(si, "volume_max", None)
+
+        # points/precision info (some symbols have 'point' attribute)
+        point     = getattr(si, "point", None) or getattr(si, "trade_tick_size", None) or getattr(si, "tick_size", None) or 0.00001
+        stop_level = getattr(si, "stop_level", None)  # in *points* typically
+
+        # compute minimum SL/TP distance in price units
+        if stop_level is not None and stop_level >= 0:
+            min_sl_dist = float(stop_level) * float(point)
+        else:
+            # fallback: require at least 10 * point distance (safe default)
+            min_sl_dist = float(point) * 10.0
+
+        # choose order price (market price if not provided)
         order_price = price if price is not None else (tick.ask if action == "BUY" else tick.bid)
+
+        # ensure lot size respects broker's min and step
+        try:
+            lots = float(lot)
+        except Exception:
+            lots = float(vol_min)
+        # snap lots up to nearest multiple of vol_step and >= vol_min
+        try:
+            if vol_step > 0:
+                # compute number of steps from vol_min to requested lots
+                steps = max(0, int((lots - vol_min) // vol_step))
+                lots_adj = vol_min + steps * vol_step
+                # if requested greater than lots_adj, try to ceil to next step
+                if lots > lots_adj:
+                    # ceil to next step
+                    steps_ceil = int(((lots - vol_min) + vol_step - 1e-12) // vol_step)
+                    lots_adj = vol_min + steps_ceil * vol_step
+                lots = round(float(max(vol_min, lots_adj)), 2)
+            else:
+                lots = float(max(vol_min, lots))
+        except Exception:
+            lots = float(max(vol_min, 0.01))
+
+        # validate SL/TP distances: compute absolute distances from entry
+        entry_price = float(order_price)
+        def valid_distance(dist):
+            try:
+                return (dist is not None) and (abs(dist) >= min_sl_dist)
+            except Exception:
+                return False
+
+        sl_ok = True; tp_ok = True
+        if sl is not None:
+            sl_dist = abs(entry_price - float(sl))
+            sl_ok = valid_distance(sl_dist)
+        if tp is not None:
+            tp_dist = abs(entry_price - float(tp))
+            tp_ok = valid_distance(tp_dist)
+
+        # if SL/TP invalid, try to adjust them to the minimum allowed distance in the correct direction
+        if not sl_ok:
+            if action == "BUY":
+                sl = entry_price - min_sl_dist
+            else:
+                sl = entry_price + min_sl_dist
+            sl_ok = True
+        if not tp_ok:
+            if action == "BUY":
+                tp = entry_price + (min_sl_dist * 2.0)
+            else:
+                tp = entry_price - (min_sl_dist * 2.0)
+            tp_ok = True
+
+        # final sanity: ensure lots >= vol_min
+        if lots < vol_min:
+            lots = float(vol_min)
+
+        # respect maximum volume if reported
+        if vol_max and lots > vol_max:
+            return {"status": "volume_too_large", "requested": lots, "max": vol_max}
+
         order_type = _mt5.ORDER_TYPE_BUY if action == "BUY" else _mt5.ORDER_TYPE_SELL
         req = {
             "action": _mt5.TRADE_ACTION_DEAL,
             "symbol": broker,
-            "volume": float(lot),
+            "volume": float(lots),
             "type": order_type,
-            "price": order_price,
+            "price": float(order_price),
             "sl": float(sl) if sl is not None else 0.0,
             "tp": float(tp) if tp is not None else 0.0,
             "deviation": 20,
@@ -709,15 +803,19 @@ def place_order_mt5(symbol, action, lot, price, sl, tp):
             "type_time": _mt5.ORDER_TIME_GTC,
             "type_filling": _mt5.ORDER_FILLING_IOC,
         }
+
         res = _mt5.order_send(req)
-        # if MT5 returns an object with retcode, handle specific cases
         retcode = getattr(res, "retcode", None)
-        # common MT5 retcode when terminal's AutoTrading is disabled
+
+        # return clearer statuses for common retcodes
         if retcode == 10027:
-            logger.warning("MT5 rejected order: AutoTrading disabled by client (retcode=10027)")
             return {"status": "autotrading_disabled", "retcode": retcode, "result": str(res)}
-        logger.info("MT5 order_send result: %s", res)
-        return {"status": "sent", "result": str(res)}
+        if retcode is not None and retcode != 0:
+            return {"status": "rejected", "retcode": retcode, "result": str(res)}
+
+        # success (retcode 0)
+        return {"status": "sent", "result": str(res), "used_lots": lots}
+
     except Exception:
         logger.exception("place_order_mt5 failed")
         return {"status": "error"}
