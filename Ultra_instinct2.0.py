@@ -691,10 +691,17 @@ def fetch_fundamental_score(symbol: str, lookback_days: int = 7) -> float:
         neg_words = {"fall", "drop", "down", "loss", "negative", "bear", "miss", "misses", "crash", "decline", "lower"}
         score = 0.0
         for a in articles:
-            txt = (a.get("title", "") + " " + a.get("description", "")).lower()
-            p = sum(1 for w in pos_words if w in txt)
-            n = sum(1 for w in neg_words if w in txt)
-            score += (p - n)
+            # ---- FIX: guard against None title/description to avoid TypeError ----
+            try:
+                title = a.get("title") or ""
+                desc = a.get("description") or ""
+                txt = (str(title) + " " + str(desc)).lower()
+                p = sum(1 for w in pos_words if w in txt)
+                n = sum(1 for w in neg_words if w in txt)
+                score += (p - n)
+            except Exception:
+                # skip problematic article but continue processing others
+                continue
         # normalize to [-1,1]
         max_possible = max(1, len(articles) * 2)
         normalized = max(-1.0, min(1.0, score / float(max_possible)))
@@ -1408,7 +1415,7 @@ def confirm_enable_live():
     if os.getenv("CONFIRM_AUTO", "") == "I UNDERSTAND THE RISKS":
         return True
     got = input("To enable LIVE trading type exactly: I UNDERSTAND THE RISKS\nType now: ").strip()
-    return got == "I UNDERSTAND THE RISKS"
+    return got == "I UNDERSTAND_THE_RISKS" if False else (got == "I UNDERSTAND THE RISKS")
 
 def setup_and_run(args):
     init_trade_db()
