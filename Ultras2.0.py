@@ -81,20 +81,20 @@ if os.getenv("CONFIRM_AUTO", "") == "I UNDERSTAND THE RISKS":
     DEMO_SIMULATION = False
     AUTO_EXECUTE = True
 
-BASE_RISK_PER_TRADE_PCT = float(os.getenv("BASE_RISK_PER_TRADE_PCT", "0.01"))
+BASE_RISK_PER_TRADE_PCT = float(os.getenv("BASE_RISK_PER_TRADE_PCT", "0.003"))
 MIN_RISK_PER_TRADE_PCT = 0.002
-MAX_RISK_PER_TRADE_PCT = 0.03
+MAX_RISK_PER_TRADE_PCT = 0.01
 RISK_PER_TRADE_PCT = BASE_RISK_PER_TRADE_PCT
 
-MAX_DAILY_TRADES = int(os.getenv("MAX_DAILY_TRADES", "30"))
+MAX_DAILY_TRADES = int(os.getenv("MAX_DAILY_TRADES", "200"))
 KILL_SWITCH_FILE = os.getenv("KILL_SWITCH_FILE", "STOP_TRADING.flag")
 ADAPT_STATE_FILE = "adapt_state.json"
 TRADES_DB = "trades.db"
 MODEL_FILE = "ultra_instinct_model.joblib"
 TRADES_CSV = "trades.csv"
-CURRENT_THRESHOLD = float(os.getenv("CURRENT_THRESHOLD", "0.20"))
-MIN_THRESHOLD = 0.08
-MAX_THRESHOLD = 0.45
+CURRENT_THRESHOLD = float(os.getenv("CURRENT_THRESHOLD", "0.08"))
+MIN_THRESHOLD = 0.06
+MAX_THRESHOLD = 0.35
 DECISION_SLEEP = int(os.getenv("DECISION_SLEEP", "60"))
 ADAPT_EVERY_CYCLES = 6
 MODEL_MIN_TRAIN = 40
@@ -442,7 +442,7 @@ def aggregate_multi_tf_scores(tf_dfs: Dict[str, pd.DataFrame]) -> Dict[str, floa
                 continue
             dfind = add_technical_indicators(df)
             t = technical_signal_score(dfind)
-            weight = {"M30": 1.5, "H1": 1.5}.get(label, 1.0)
+            weight = {"M30": 1.8, "H1": 1.2}.get(label, 1.0)
             techs.append((t, weight))
         except Exception:
             logger.exception("aggregate_multi_tf_scores failed for %s", label)
@@ -655,12 +655,12 @@ def make_decision_for_symbol(symbol: str, live: bool=False):
                 model_score = 0.0
         total_score = 0.5 * tech_score + 0.3 * model_score
         candidate = None
-        if total_score >= CURRENT_THRESHOLD:
+        if total_score >= 0.08:
             candidate = "BUY"
-        if total_score <= -CURRENT_THRESHOLD:
+        if total_score <= -0.08:
             candidate = "SELL"
         final_signal = None
-        if candidate is not None and abs(total_score) >= (CURRENT_THRESHOLD * 0.75):
+        if candidate is not None and abs(total_score) >= 0.06:
             final_signal = candidate
         decision = {"symbol": symbol, "agg": total_score, "tech": tech_score, "model_score": model_score, "final": final_signal}
         if final_signal:
