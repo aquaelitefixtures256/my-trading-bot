@@ -1186,15 +1186,116 @@ def place_order_mt5(symbol, action, lot, price, sl, tp):
         return {"status": "error"}
 
 def get_today_trade_count():
-    today = date.today().isoformat()
+    """
+    Robust daily trade count with explicit reset logic:
+      - Uses DAILY_RESET_TZ env var to choose reset reference:
+          * "UTC"   -> midnight UTC (default)
+          * "LOCAL" -> midnight local machine time
+          * "BROKER"-> broker/server current date (requires MT5 connected)
+      - Reads all 'ts' values from trades DB and filters in Python (safer than SQL datetime comparisons).
+      - Handles ISO timestamps with/without timezone. If a timestamp is naive (no tz), treat it as UTC.
+      - Returns integer count of trades with ts >= chosen day's midnight (in UTC for comparison).
+    """
     try:
+        # Read all timestamps from DB
         conn = sqlite3.connect(TRADES_DB, timeout=5)
         cur = conn.cursor()
-        cur.execute("SELECT COUNT(*) FROM trades WHERE ts >= ?", (today + "T00:00:00+00:00",))
-        r = cur.fetchone(); conn.close()
-        return int(r[0]) if r else 0
+        cur.execute("SELECT ts FROM trades")
+        rows = cur.fetchall()
+        conn.close()
     except Exception:
+        logger.exception("get_today_trade_count: DB read failed")
         return 0
+
+    # Determine the day's midnight (as aware datetime in UTC) based on mode
+    reset_mode = os.getenv("DAILY_RESET_TZ", "UTC").strip().upper()
+    start_utc = None
+    try:
+        if reset_mode == "BROKER" and MT5_AVAILABLE and _mt5_connected:
+            try:
+                # mt5.time_current returns epoch seconds (UTC). Use it to get broker current date.
+                broker_now_ts = _mt5.time_current()
+                if broker_now_ts:
+                    broker_now = datetime.utcfromtimestamp(int(broker_now_ts))
+                    broker_date = broker_now.date()
+                    start_utc = datetime(broker_date.year, broker_date.month, broker_date.day, tzinfo=timezone.utc)
+                else:
+                    # fallback to UTC
+                    today = datetime.utcnow().date()
+                    start_utc = datetime(today.year, today.month, today.day, tzinfo=timezone.utc)
+            except Exception:
+                logger.debug("get_today_trade_count: broker time fetch failed, falling back to UTC", exc_info=True)
+                today = datetime.utcnow().date()
+                start_utc = datetime(today.year, today.month, today.day, tzinfo=timezone.utc)
+        elif reset_mode == "LOCAL":
+            # compute local midnight then convert to UTC
+            try:
+                local_now = datetime.now().astimezone()
+                local_date = local_now.date()
+                local_midnight = datetime(local_date.year, local_date.month, local_date.day, tzinfo=local_now.tzinfo)
+                start_utc = local_midnight.astimezone(timezone.utc)
+            except Exception:
+                logger.debug("get_today_trade_count: local timezone conversion failed, falling back to UTC", exc_info=True)
+                today = datetime.utcnow().date()
+                start_utc = datetime(today.year, today.month, today.day, tzinfo=timezone.utc)
+        else:
+            # Default: UTC midnight
+            today = datetime.utcnow().date()
+            start_utc = datetime(today.year, today.month, today.day, tzinfo=timezone.utc)
+    except Exception:
+        # ultimate fallback
+        today = datetime.utcnow().date()
+        start_utc = datetime(today.year, today.month, today.day, tzinfo=timezone.utc)
+
+    count = 0
+    for (ts_raw,) in rows:
+        if not ts_raw:
+            continue
+        parsed = None
+        try:
+            # Try parsing as timezone-aware (assume UTC if 'Z' or offset present)
+            parsed = pd.to_datetime(ts_raw, utc=True, errors="coerce")
+        except Exception:
+            parsed = None
+        if pd.isna(parsed):
+            # Try parse naive then assume UTC
+            try:
+                parsed_naive = pd.to_datetime(ts_raw, errors="coerce")
+                if pd.isna(parsed_naive):
+                    continue
+                # treat naive timestamps as UTC (this matches how record_trade writes timestamps)
+                parsed = parsed_naive.replace(tzinfo=timezone.utc)
+            except Exception:
+                continue
+        # Ensure parsed is timezone-aware in UTC
+        try:
+            if getattr(parsed, "tzinfo", None) is None:
+                parsed = parsed.tz_localize(timezone.utc)
+        except Exception:
+            # if pandas Timestamp, convert to python datetime with tzinfo=UTC
+            try:
+                parsed = pd.to_datetime(parsed).to_pydatetime()
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+            except Exception:
+                continue
+
+        # Compare
+        try:
+            # normalize to UTC-aware datetime
+            if isinstance(parsed, pd.Timestamp):
+                parsed_dt = parsed.to_pydatetime()
+            else:
+                parsed_dt = parsed
+            # If parsed_dt has no tzinfo, assume UTC
+            if parsed_dt.tzinfo is None:
+                parsed_dt = parsed_dt.replace(tzinfo=timezone.utc)
+            if parsed_dt >= start_utc:
+                count += 1
+        except Exception:
+            continue
+
+    return int(count)
 
 def make_decision_for_symbol(symbol: str, live: bool=False):
     global cycle_counter, model_pipe, CURRENT_THRESHOLD, RISK_PER_TRADE_PCT
