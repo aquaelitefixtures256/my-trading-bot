@@ -97,7 +97,7 @@ TIMEFRAMES = {"M30": "30m", "H1": "60m"}  # M30 + H1 as you requested
 DEMO_SIMULATION = False
 AUTO_EXECUTE = True
 # if env var set, keep parity (but we already default to live)
-if os.getenv("CONFIRM_AUTO", "") == "I UNDERSTAND THE RISKS":
+if os.getenv("CONFIRM_AUTO", "") == "I UNDERSTAND_THE_RISKS" or os.getenv("CONFIRM_AUTO", "") == "I UNDERSTAND THE RISKS":
     DEMO_SIMULATION = False
     AUTO_EXECUTE = True
 
@@ -136,6 +136,32 @@ TRADING_ECONOMICS_KEY = os.getenv("TRADING_ECONOMICS_KEY", "")
 
 # Pause window before major events (minutes)
 PAUSE_BEFORE_EVENT_MINUTES = int(os.getenv("PAUSE_BEFORE_EVENT_MINUTES", "30"))
+
+# ---------------- --- Telegram helper (ADDED) ----------------
+def send_telegram_message(text: str) -> bool:
+    """
+    Safe, minimal Telegram notifier used when live trades occur.
+    Returns True if send succeeded, False otherwise.
+    """
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        logger.debug("send_telegram_message: Telegram not configured (missing token or chat id)")
+        return False
+    if not FUNDAMENTAL_AVAILABLE:
+        # requests not available
+        logger.debug("send_telegram_message: requests library not available")
+        return False
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
+        resp = requests.post(url, data=payload, timeout=8)
+        if resp.status_code == 200:
+            return True
+        else:
+            logger.warning("send_telegram_message: non-200 %s %s", resp.status_code, resp.text[:200])
+            return False
+    except Exception:
+        logger.exception("send_telegram_message failed")
+        return False
 
 # ---------------- persistence and state ----------------
 def load_adapt_state():
@@ -1411,7 +1437,23 @@ def make_decision_for_symbol(symbol: str, live: bool=False):
             lots = compute_lots_from_risk(risk_pct, balance, entry, sl)
             if live and not DEMO_SIMULATION:
                 res = place_order_mt5(symbol, final_signal, lots, None, sl, tp)
+                # record trade in DB/CSV
                 record_trade(symbol, final_signal, entry, sl, tp, lots, status=res.get("status", "unknown"), pnl=0.0, rmult=0.0, regime=regime, score=tech_score, model_score=model_score, meta=res)
+                # TELEGRAM NOTIFICATION: attempt to notify immediately after recording a live trade
+                try:
+                    # Compose a concise message
+                    msg = (
+                        f"🚀 LIVE TRADE\n"
+                        f"{final_signal} {symbol}\n"
+                        f"Lots: {lots}\n"
+                        f"Entry: {entry}\n"
+                        f"SL: {sl}\n"
+                        f"TP: {tp}\n"
+                        f"Status: {res.get('status')}"
+                    )
+                    send_telegram_message(msg)
+                except Exception:
+                    logger.exception("Telegram notify failed after live trade")
             else:
                 res = place_order_simulated(symbol, final_signal, lots, entry, sl, tp, tech_score, model_score, regime)
             decision.update({"entry": entry, "sl": sl, "tp": tp, "lots": lots, "placed": res})
@@ -1510,7 +1552,7 @@ def run_backtest():
     logger.info("Backtest complete")
 
 def confirm_enable_live():
-    if os.getenv("CONFIRM_AUTO", "") == "I UNDERSTAND THE RISKS":
+    if os.getenv("CONFIRM_AUTO", "") == "I UNDERSTAND_THE_RISKS":
         return True
     got = input("To enable LIVE trading type exactly: I UNDERSTAND THE RISKS\nType now: ").strip()
     return got == "I UNDERSTAND THE RISKS"
