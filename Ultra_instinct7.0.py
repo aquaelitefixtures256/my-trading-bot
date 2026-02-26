@@ -92,6 +92,7 @@ BROKER_SYMBOLS = {
 }
 
 TIMEFRAMES = {"M30": "30m", "H1": "60m"}  # M30 + H1 as you requested
+
 # Safety defaults - DEMO removed: go straight to live (you said you understand the risks)
 DEMO_SIMULATION = False
 AUTO_EXECUTE = True
@@ -104,7 +105,8 @@ BASE_RISK_PER_TRADE_PCT = float(os.getenv("BASE_RISK_PER_TRADE_PCT", "0.003"))
 MIN_RISK_PER_TRADE_PCT = 0.002
 MAX_RISK_PER_TRADE_PCT = 0.01
 RISK_PER_TRADE_PCT = BASE_RISK_PER_TRADE_PCT
-MAX_DAILY_TRADES = int(os.getenv("MAX_DAILY_TRADES", "50"))
+
+MAX_DAILY_TRADES = int(os.getenv("MAX_DAILY_TRADES", "200"))
 KILL_SWITCH_FILE = os.getenv("KILL_SWITCH_FILE", "STOP_TRADING.flag")
 ADAPT_STATE_FILE = "adapt_state.json"
 TRADES_DB = "trades.db"
@@ -117,13 +119,6 @@ DECISION_SLEEP = int(os.getenv("DECISION_SLEEP", "60"))
 ADAPT_EVERY_CYCLES = 6
 MODEL_MIN_TRAIN = 40
 
-# ===== Added threshold adaptation constants you provided =====
-ADAPT_MIN_TRADES = 40          # require decent sample size
-TARGET_WINRATE = 0.525        # midpoint between 0.45 and 0.60
-K = 0.04                      # proportional strength
-MAX_ADJ = 0.01                # maximum threshold movement per cycle
-# ===========================================================
-
 # MT5 credentials env
 MT5_LOGIN = os.getenv("MT5_LOGIN")
 MT5_PASSWORD = os.getenv("MT5_PASSWORD")
@@ -134,10 +129,11 @@ MT5_PATH = os.getenv("MT5_PATH", r"C:\Program Files\MetaTrader 5\terminal64.exe"
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# fundamental API (optional) - user may set NEWS_API_KEY env to enable.
+# fundamental API (optional) - user may set NEWS_API_KEY env to enable
 NEWS_API_KEY = os.getenv("NEWS_API_KEY", "")
 # TradingEconomics API key for economic calendar (ADDED)
 TRADING_ECONOMICS_KEY = os.getenv("TRADING_ECONOMICS_KEY", "")
+
 # Pause window before major events (minutes)
 PAUSE_BEFORE_EVENT_MINUTES = int(os.getenv("PAUSE_BEFORE_EVENT_MINUTES", "30"))
 
@@ -147,7 +143,8 @@ def send_telegram_message(text: str) -> bool:
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         logger.debug("send_telegram_message: Telegram not configured (missing token or chat id)")
         return False
-    if not FUNDAMENTAL_AVAILABLE:  # requests not available
+    if not FUNDAMENTAL_AVAILABLE:
+        # requests not available
         logger.debug("send_telegram_message: requests library not available")
         return False
     try:
@@ -196,7 +193,10 @@ def _get_table_columns(conn: sqlite3.Connection, table: str) -> List[str]:
         return []
 
 def init_trade_db():
-    """ Create or migrate the trades table so that older DB schemas won't cause insertion errors. This will add missing columns if possible; if the table doesn't exist it will be created with the expected schema. """
+    """
+    Create or migrate the trades table so that older DB schemas won't cause insertion errors.
+    This will add missing columns if possible; if the table doesn't exist it will be created with the expected schema.
+    """
     conn = sqlite3.connect(TRADES_DB, timeout=5)
     cur = conn.cursor()
     expected_cols = {
@@ -220,8 +220,8 @@ def init_trade_db():
         # if table doesn't exist, create it
         cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='trades'")
         if not cur.fetchone():
-            cols_sql = ",\n ".join([f"{k} {v}" for k, v in expected_cols.items()])
-            create_sql = f"CREATE TABLE trades (\n {cols_sql}\n );"
+            cols_sql = ",\n      ".join([f"{k} {v}" for k, v in expected_cols.items()])
+            create_sql = f"CREATE TABLE trades (\n      {cols_sql}\n    );"
             cur.execute(create_sql)
             conn.commit()
         else:
@@ -255,7 +255,9 @@ def init_trade_db():
             logger.exception("Failed to create trades csv")
 
 def record_trade(symbol, side, entry, sl, tp, lots, status="sim", pnl=0.0, rmult=0.0, regime="unknown", score=0.0, model_score=0.0, meta=None):
-    """Insert a trade into the trades table. This function inspects the existing DB schema and writes only the columns present. It also supports legacy column `rm` by populating it with rmult for backwards compatibility. """
+    """Insert a trade into the trades table. This function inspects the existing DB schema and writes only the columns present.
+    It also supports legacy column `rm` by populating it with rmult for backwards compatibility.
+    """
     ts = datetime.now(timezone.utc).isoformat()
     meta_json = json.dumps(meta or {})
     data = {
@@ -268,7 +270,8 @@ def record_trade(symbol, side, entry, sl, tp, lots, status="sim", pnl=0.0, rmult
         "lots": lots,
         "status": status,
         "pnl": pnl,
-        "rmult": rmult,  # legacy alias
+        "rmult": rmult,
+        # legacy alias
         "rm": rmult,
         "regime": regime,
         "score": score,
@@ -405,9 +408,9 @@ def map_symbol_to_broker(requested: str) -> str:
             bn = b.lower()
             if low_req in bn or bn.startswith(low_req) or bn.endswith(low_req):
                 return b
+        # fallback: return as-is
     except Exception:
         logger.debug("map_symbol_to_broker error", exc_info=True)
-    # fallback: return as-is
     return requested
 
 # ---------------- MT5-only data fetcher ----------------
@@ -475,7 +478,7 @@ def fetch_ohlcv_mt5(symbol: str, interval: str = "60m", period_days: int = 60):
         return df
     except Exception:
         logger.exception("fetch_ohlcv_mt5 error")
-    return None
+        return None
 
 def fetch_ohlcv(symbol: str, interval: str = "60m", period_days: int = 60):
     # MT5-only fetch: return None if MT5 not available or symbol not found
@@ -547,8 +550,7 @@ def detect_market_regime_from_h1(df_h1: pd.DataFrame):
             return "unknown", None, None
         d = add_technical_indicators(df_h1)
         atr = float(d["atr14"].iloc[-1])
-        price = float(d["close"].iloc[-1])
-        if d["close"].iloc[-1] else 1.0
+        price = float(d["close"].iloc[-1]) if d["close"].iloc[-1] else 1.0
         rel = atr / price if price else 0.0
         adx = float(d["adx"].iloc[-1]) if "adx" in d.columns else 0.0
         if rel < 0.0025 and adx < 20:
@@ -560,7 +562,7 @@ def detect_market_regime_from_h1(df_h1: pd.DataFrame):
         return "normal", rel, adx
     except Exception:
         logger.exception("detect_market_regime failed")
-    return "unknown", None, None
+        return "unknown", None, None
 
 def technical_signal_score(df: pd.DataFrame) -> float:
     try:
@@ -599,12 +601,19 @@ def aggregate_multi_tf_scores(tf_dfs: Dict[str, pd.DataFrame]) -> Dict[str, floa
     return {"tech": float(s / w), "fund": 0.0, "sent": 0.0}
 
 # ---------------- Multi-asset blending & fundamental awareness (ADDITIONS) ----------------
+
 # cache portfolio weights (recomputed periodically)
 _portfolio_weights_cache = {"ts": 0, "weights": {}}
 PORTFOLIO_RECOMPUTE_SECONDS = 300  # recompute every 5 minutes
 
 def compute_portfolio_weights(symbols: List[str], period_days: int = 45):
-    """ Lightweight multi-asset weighting: - compute recent returns volatility and pairwise correlations on H1 - assign weights inverse to volatility, penalized by mean correlation - normalise so sum(weights) == 1 and then scaled to [0.6,1.4] factor when used for risk scaling Returns dict symbol -> normalized weight (sum=1) """
+    """
+    Lightweight multi-asset weighting:
+      - compute recent returns volatility and pairwise correlations on H1
+      - assign weights inverse to volatility, penalized by mean correlation
+      - normalise so sum(weights) == 1 and then scaled to [0.6,1.4] factor when used for risk scaling
+    Returns dict symbol -> normalized weight (sum=1)
+    """
     global _portfolio_weights_cache
     now = time.time()
     if now - _portfolio_weights_cache.get("ts", 0) < PORTFOLIO_RECOMPUTE_SECONDS and _portfolio_weights_cache.get("weights"):
@@ -653,7 +662,10 @@ def compute_portfolio_weights(symbols: List[str], period_days: int = 45):
     return weights
 
 def get_portfolio_scale_for_symbol(symbol: str, weights: Dict[str, float]):
-    """ Convert normalized weights into a risk scaling factor in [0.6, 1.4]. Heavier weight => slightly higher risk allowed (scale up), lower weight scale down. """
+    """
+    Convert normalized weights into a risk scaling factor in [0.6, 1.4].
+    Heavier weight => slightly higher risk allowed (scale up), lower weight scale down.
+    """
     if not weights or symbol not in weights:
         return 1.0
     w = float(weights.get(symbol, 0.0))
@@ -667,7 +679,13 @@ def get_portfolio_scale_for_symbol(symbol: str, weights: Dict[str, float]):
     return max(0.6, min(1.4, scale))
 
 def fetch_fundamental_score(symbol: str, lookback_days: int = 7) -> float:
-    """ Lightweight fundamental sentiment proxy: - If NEWS_API_KEY is set and requests available, query a news API for headlines mentioning the symbol name (best-effort) - Score range [-1, 1] where positive means generally positive coverage If external API not available, returns 0.0 Note: this is a best-effort, optional component; users should set NEWS_API_KEY to enable. """
+    """
+    Lightweight fundamental sentiment proxy:
+      - If NEWS_API_KEY is set and requests available, query a news API for headlines mentioning the symbol name (best-effort)
+      - Score range [-1, 1] where positive means generally positive coverage
+    If external API not available, returns 0.0
+    Note: this is a best-effort, optional component; users should set NEWS_API_KEY to enable.
+    """
     if not FUNDAMENTAL_AVAILABLE or not NEWS_API_KEY:
         return 0.0
     # Map symbol to natural language query
@@ -704,9 +722,8 @@ def fetch_fundamental_score(symbol: str, lookback_days: int = 7) -> float:
         neg_words = {"fall", "drop", "down", "loss", "negative", "bear", "miss", "misses", "crash", "decline", "lower"}
         score = 0.0
         for a in articles:
-            # Ensure we never concatenate None
-            title = str(a.get("title") or "")
-            desc = str(a.get("description") or "")
+            title = a.get("title") or ""
+            desc = a.get("description") or ""
             txt = (title + " " + desc).lower()
             p = sum(1 for w in pos_words if w in txt)
             n = sum(1 for w in neg_words if w in txt)
@@ -717,11 +734,15 @@ def fetch_fundamental_score(symbol: str, lookback_days: int = 7) -> float:
         return float(normalized)
     except Exception:
         logger.exception("fetch_fundamental_score failed")
-    return 0.0
+        return 0.0
 
 # ---------------- Real-time economic calendar (ADDED) ----------------
+
 def _symbol_to_currencies(symbol: str) -> List[str]:
-    """ Map a symbol to associated currencies for calendar lookup. EURUSD -> ['EUR','USD']; XAUUSD -> ['XAU','USD'], BTCUSD -> ['BTC','USD'] """
+    """
+    Map a symbol to associated currencies for calendar lookup.
+    EURUSD -> ['EUR','USD']; XAUUSD -> ['XAU','USD'], BTCUSD -> ['BTC','USD']
+    """
     s = symbol.upper()
     if len(s) >= 6:
         base = s[:3]
@@ -737,7 +758,11 @@ def _symbol_to_currencies(symbol: str) -> List[str]:
     return [s]
 
 def fetch_economic_calendar_events(lookback_hours: int = 6, lookahead_hours: int = 6) -> List[Dict[str, Any]]:
-    """ Fetch calendar events from TradingEconomics (best-effort). Returns a list of event dicts or empty list on failure. Requires TRADING_ECONOMICS_KEY environment variable. """
+    """
+    Fetch calendar events from TradingEconomics (best-effort).
+    Returns a list of event dicts or empty list on failure.
+    Requires TRADING_ECONOMICS_KEY environment variable.
+    """
     if not FUNDAMENTAL_AVAILABLE or not TRADING_ECONOMICS_KEY:
         return []
     try:
@@ -760,10 +785,15 @@ def fetch_economic_calendar_events(lookback_hours: int = 6, lookahead_hours: int
         return out
     except Exception:
         logger.exception("fetch_economic_calendar_events failed")
-    return []
+        return []
 
 def fetch_economic_calendar_score(symbol: str, lookback_hours: int = 6, lookahead_hours: int = 6) -> float:
-    """ Convert recent/upcoming economic releases into a sentiment score [-1,1]. +1 means overall better-than-expected or positive events for the symbol currencies, -1 means worse-than-expected or negative events. Only high-impact events are counted, normalized by number of high-impact events found. """
+    """
+    Convert recent/upcoming economic releases into a sentiment score [-1,1].
+    +1 means overall better-than-expected or positive events for the symbol currencies,
+    -1 means worse-than-expected or negative events.
+    Only high-impact events are counted, normalized by number of high-impact events found.
+    """
     if not FUNDAMENTAL_AVAILABLE or not TRADING_ECONOMICS_KEY:
         return 0.0
     try:
@@ -773,22 +803,25 @@ def fetch_economic_calendar_score(symbol: str, lookback_hours: int = 6, lookahea
         related = []
         currs = _symbol_to_currencies(symbol)
         for e in evs:
-            # Impact field sometimes spelled differently; try common keys
-            impact = e.get("Impact") or e.get("importance") or e.get("importanceText") or e.get("impact", "")
-            country = (e.get("Country") or e.get("country") or "").upper()
-            title = (e.get("Event") or e.get("Title") or e.get("event") or "").lower()
-            # filter by high impact
-            if not impact:
+            try:
+                # Impact field sometimes spelled differently; try common keys
+                impact = e.get("Impact") or e.get("importance") or e.get("importanceText") or e.get("impact", "")
+                country = (e.get("Country") or e.get("country") or "").upper()
+                title = (e.get("Event") or e.get("Title") or e.get("event") or "").lower()
+                # filter by high impact
+                if not impact:
+                    continue
+                if str(impact).lower() not in ("high", "h", "high impact"):
+                    continue
+                # check if event mentions one of symbol currencies by country or code
+                match = False
+                for c in currs:
+                    if c and (c.lower() in title or c.upper() == country or c.upper() in str(e.get("Category", "")).upper()):
+                        match = True
+                if match:
+                    related.append(e)
+            except Exception:
                 continue
-            if str(impact).lower() not in ("high", "h", "high impact"):
-                continue
-            # check if event mentions one of symbol currencies by country or code match
-            match = False
-            for c in currs:
-                if c and (c.lower() in title or c.upper() == country or c.upper() in str(e.get("Category", "")).upper()):
-                    match = True
-            if match:
-                related.append(e)
         if not related:
             return 0.0
         score = 0.0
@@ -796,13 +829,11 @@ def fetch_economic_calendar_score(symbol: str, lookback_hours: int = 6, lookahea
         for e in related:
             actual = e.get("Actual") or e.get("actual") or e.get("Value") or e.get("value")
             forecast = e.get("Consensus") or e.get("Forecast") or e.get("consensus") or e.get("forecast")
-            # sometimes actual/forecast are strings; attempt numeric compare
             try:
                 if actual is None or str(actual).strip() == "":
                     continue
                 actual_val = float(str(actual).replace(",", ""))
-                forecast_val = float(str(forecast).replace(",", ""))
-                if forecast not in (None, "", "None") else None
+                forecast_val = float(str(forecast).replace(",", "")) if forecast not in (None, "", "None") else None
                 if forecast_val is None:
                     continue
                 if actual_val > forecast_val:
@@ -811,7 +842,6 @@ def fetch_economic_calendar_score(symbol: str, lookback_hours: int = 6, lookahea
                     score -= 1.0
                 count += 1
             except Exception:
-                # if numeric parse fails, skip this event for scoring but still count as event
                 count += 1
                 continue
         if count == 0:
@@ -819,10 +849,13 @@ def fetch_economic_calendar_score(symbol: str, lookback_hours: int = 6, lookahea
         return max(-1.0, min(1.0, score / float(count)))
     except Exception:
         logger.exception("fetch_economic_calendar_score failed")
-    return 0.0
+        return 0.0
 
 def should_pause_for_events(symbol: str, lookahead_minutes: int = 30) -> (bool, Optional[Dict[str, Any]]):
-    """ Return (True, event) if there is a high-impact economic event for the symbol's currencies within lookahead_minutes. Useful to pause trading around major releases. """
+    """
+    Return (True, event) if there is a high-impact economic event for the symbol's currencies within lookahead_minutes.
+    Useful to pause trading around major releases.
+    """
     try:
         if not FUNDAMENTAL_AVAILABLE or not TRADING_ECONOMICS_KEY:
             return False, None
@@ -832,7 +865,7 @@ def should_pause_for_events(symbol: str, lookahead_minutes: int = 30) -> (bool, 
         now = datetime.utcnow()
         currs = _symbol_to_currencies(symbol)
         for e in evs:
-            impact = e.get("Impact") or e.get("importance") or e.get("impact", "")
+            impact = e.get("Impact") or e.get("importance") or e.get("importanceText") or e.get("impact", "")
             if not impact or str(impact).lower() not in ("high", "h", "high impact"):
                 continue
             # parse event datetime
@@ -846,13 +879,10 @@ def should_pause_for_events(symbol: str, lookahead_minutes: int = 30) -> (bool, 
                         continue
             if when is None:
                 continue
-            # compute minutes to event
             diff = (when.to_pydatetime().replace(tzinfo=None) - now).total_seconds() / 60.0
             if diff < 0:
-                # already occurred; skip
                 continue
             if diff <= lookahead_minutes:
-                # check if currency matches
                 title = (e.get("Event") or e.get("Title") or "").lower()
                 country = (e.get("Country") or "").upper()
                 for c in currs:
@@ -861,13 +891,18 @@ def should_pause_for_events(symbol: str, lookahead_minutes: int = 30) -> (bool, 
         return False, None
     except Exception:
         logger.exception("should_pause_for_events failed")
-    return False, None
+        return False, None
 
 # ---------------- simple ML hooks (ENHANCED) ----------------
 model_pipe = None
 
 def build_model():
-    """ Enhanced model builder: - Prefer RandomForestClassifier if sklearn available - Fallback to SGDClassifier logistic if RandomForest not available - Pipeline includes scaling for linear models """
+    """
+    Enhanced model builder:
+      - Prefer RandomForestClassifier if sklearn available
+      - Fallback to SGDClassifier logistic if RandomForest not available
+      - Pipeline includes scaling for linear models
+    """
     if not SKLEARN_AVAILABLE:
         return None
     try:
@@ -908,7 +943,11 @@ if SKLEARN_AVAILABLE:
     load_model()
 
 def extract_features_for_model(df_h1: pd.DataFrame, tech_score: float, symbol: str, regime_code: int):
-    """ Build a small feature vector for ML: - tech_score, recent ATR/price ratio, recent volatility, momentum (rsi), volume change, regime_code Returns numpy array shape (1, n) """
+    """
+    Build a small feature vector for ML:
+      - tech_score, recent ATR/price ratio, recent volatility, momentum (rsi), volume change, regime_code
+    Returns numpy array shape (1, n)
+    """
     try:
         d = add_technical_indicators(df_h1.copy())
         entry = float(d["close"].iloc[-1])
@@ -1031,54 +1070,111 @@ def place_order_simulated(symbol, side, lots, entry, sl, tp, score, model_score,
     record_trade(symbol, side, entry, sl, tp, lots, status="sim_open", pnl=0.0, rmult=0.0, regime=regime, score=score, model_score=model_score)
     return {"status":"sim_open"}
 
+# ----- NEW: helper to inspect broker state after sending an order -----
+def inspect_broker_for_trade(broker_symbol: str, expected_side: str, expected_lots: float, expected_price: float, look_seconds: int = 6):
+    """
+    After sending an order, call this to quickly check if a position or order for the symbol exists.
+    Returns dict { "positions": [...], "orders": [...], "found_executed": bool }
+    """
+    out = {"positions": [], "orders": [], "found_executed": False}
+    if not MT5_AVAILABLE or not _mt5_connected:
+        return out
+    try:
+        # small wait so broker can update (short)
+        time.sleep(min(look_seconds, 6))
+        try:
+            pos = _mt5.positions_get(symbol=broker_symbol) or []
+        except Exception:
+            pos = []
+        try:
+            ords = _mt5.orders_get(symbol=broker_symbol) or []
+        except Exception:
+            ords = []
+
+        # convert to simple dicts/strs for logging
+        out["positions"] = [str(p) for p in pos]
+        out["orders"] = [str(o) for o in ords]
+
+        # Heuristic: if any position exists for the symbol with volume close to expected_lots -> assume executed
+        for p in pos:
+            try:
+                vol = float(getattr(p, "volume", 0.0))
+                sym = getattr(p, "symbol", "")
+                # compare symbol and approximate volume
+                if sym and sym.lower() == broker_symbol.lower() and abs(vol - expected_lots) <= max(0.01, 0.1 * expected_lots):
+                    out["found_executed"] = True
+                    break
+            except Exception:
+                continue
+
+        # Also look at recent orders (if pending became market -> position above)
+        if not out["found_executed"]:
+            for o in ords:
+                try:
+                    sym = getattr(o, "symbol", "")
+                    vol = float(getattr(o, "volume", 0.0))
+                    if sym and sym.lower() == broker_symbol.lower() and abs(vol - expected_lots) <= max(0.01, 0.1 * expected_lots):
+                        # a pending order exists — treat as not executed but present
+                        out["found_executed"] = False
+                        break
+                except Exception:
+                    continue
+
+    except Exception:
+        logger.exception("inspect_broker_for_trade failed")
+    return out
+
+# ----- REPLACED place_order_mt5: richer diagnostics + post-inspect -----
 def place_order_mt5(symbol, action, lot, price, sl, tp):
-    """ Broker-aware order sender: - maps symbol - enforces volume_min and volume_step - enforces minimum stop level (SL/TP) distances in points (with safe fallbacks) - returns clear status explaining why MT5 refused the order """
+    """
+    Replacement place_order_mt5: returns a richer dict including retcode, result string, plus positions/orders snapshot.
+    If the retcode is non-zero we additionally inspect broker positions/orders; if a matching position is found we return status 'sent' anyway.
+    """
     if not MT5_AVAILABLE or not _mt5_connected:
         return {"status": "mt5_not_connected"}
+
     try:
         broker = map_symbol_to_broker(symbol)
-        # get symbol info (trade properties) and tick
+
         si = _mt5.symbol_info(broker)
         if si is None:
             return {"status": "symbol_not_found", "symbol": broker}
-        # ensure symbol is visible/selected
+
         try:
             if not si.visible:
                 _mt5.symbol_select(broker, True)
         except Exception:
             pass
+
         tick = _mt5.symbol_info_tick(broker)
         if tick is None:
             return {"status": "no_tick", "symbol": broker}
-        # read broker constraints with safe fallbacks
+
+        # volume constraints and step
         vol_min = getattr(si, "volume_min", None) or getattr(si, "volume_min", 0.01) or 0.01
         vol_step = getattr(si, "volume_step", None) or getattr(si, "volume_step", 0.01) or 0.01
-        vol_max = getattr(si, "volume_max", None) or getattr(si, "volume_max", None)
-        # points/precision info (some symbols have 'point' attribute)
+        vol_max = getattr(si, "volume_max", None) or None
+
         point = getattr(si, "point", None) or getattr(si, "trade_tick_size", None) or getattr(si, "tick_size", None) or 0.00001
-        stop_level = getattr(si, "stop_level", None)  # in *points* typically
-        # compute minimum SL/TP distance in price units
+        stop_level = getattr(si, "stop_level", None)
+
         if stop_level is not None and stop_level >= 0:
             min_sl_dist = float(stop_level) * float(point)
         else:
-            # fallback: require at least 10 * point distance (safe default)
             min_sl_dist = float(point) * 10.0
-        # choose order price (market price if not provided)
+
         order_price = price if price is not None else (tick.ask if action == "BUY" else tick.bid)
-        # ensure lot size respects broker's min and step
+
         try:
             lots = float(lot)
         except Exception:
             lots = float(vol_min)
-        # snap lots up to nearest multiple of vol_step and >= vol_min
+        # snap
         try:
             if vol_step > 0:
-                # compute number of steps from vol_min to requested lots
                 steps = max(0, int((lots - vol_min) // vol_step))
                 lots_adj = vol_min + steps * vol_step
-                # if requested greater than lots_adj, try to ceil to next step
                 if lots > lots_adj:
-                    # ceil to next step
                     steps_ceil = int(((lots - vol_min) + vol_step - 1e-12) // vol_step)
                     lots_adj = vol_min + steps_ceil * vol_step
                 lots = round(float(max(vol_min, lots_adj)), 2)
@@ -1086,13 +1182,14 @@ def place_order_mt5(symbol, action, lot, price, sl, tp):
                 lots = float(max(vol_min, lots))
         except Exception:
             lots = float(max(vol_min, 0.01))
-        # validate SL/TP distances: compute absolute distances from entry
+
         entry_price = float(order_price)
         def valid_distance(dist):
             try:
                 return (dist is not None) and (abs(dist) >= min_sl_dist)
             except Exception:
                 return False
+
         sl_ok = True; tp_ok = True
         if sl is not None:
             sl_dist = abs(entry_price - float(sl))
@@ -1100,7 +1197,7 @@ def place_order_mt5(symbol, action, lot, price, sl, tp):
         if tp is not None:
             tp_dist = abs(entry_price - float(tp))
             tp_ok = valid_distance(tp_dist)
-        # if SL/TP invalid, try to adjust them to the minimum allowed distance in the correct direction
+
         if not sl_ok:
             if action == "BUY":
                 sl = entry_price - min_sl_dist
@@ -1113,12 +1210,13 @@ def place_order_mt5(symbol, action, lot, price, sl, tp):
             else:
                 tp = entry_price - (min_sl_dist * 2.0)
             tp_ok = True
-        # final sanity: ensure lots >= vol_min
+
         if lots < vol_min:
             lots = float(vol_min)
-        # respect maximum volume if reported
+
         if vol_max and lots > vol_max:
             return {"status": "volume_too_large", "requested": lots, "max": vol_max}
+
         order_type = _mt5.ORDER_TYPE_BUY if action == "BUY" else _mt5.ORDER_TYPE_SELL
         req = {
             "action": _mt5.TRADE_ACTION_DEAL,
@@ -1134,21 +1232,50 @@ def place_order_mt5(symbol, action, lot, price, sl, tp):
             "type_time": _mt5.ORDER_TIME_GTC,
             "type_filling": _mt5.ORDER_FILLING_IOC,
         }
+
         res = _mt5.order_send(req)
-        retcode = getattr(res, "retcode", None)
-        # return clearer statuses for common retcodes
-        if retcode == 10027:
-            return {"status": "autotrading_disabled", "retcode": retcode, "result": str(res)}
-        if retcode is not None and retcode != 0:
-            return {"status": "rejected", "retcode": retcode, "result": str(res)}
-        # success (retcode 0)
-        return {"status": "sent", "result": str(res), "used_lots": lots}
+        # build diagnostic dict
+        diag = {"status_raw": None, "retcode": None, "result": None, "deal": None, "order": None, "comment": None}
+        try:
+            diag["retcode"] = getattr(res, "retcode", None)
+            diag["result"] = str(res)
+            diag["deal"] = getattr(res, "deal", None)
+            diag["order"] = getattr(res, "order", None)
+            diag["comment"] = getattr(res, "comment", None)
+        except Exception:
+            diag["result"] = str(res)
+
+        # if retcode == 0 -> success, return 'sent'
+        if diag.get("retcode", 0) == 0 or diag.get("retcode") in (0, None):
+            return {"status": "sent", "meta": diag, "used_lots": lots}
+        # otherwise retcode != 0. Inspect positions/orders to see if broker executed anything.
+        try:
+            inspect = inspect_broker_for_trade(broker_symbol=broker, expected_side=action, expected_lots=lots, expected_price=entry_price, look_seconds=4)
+            diag["post_inspect"] = inspect
+            if inspect.get("found_executed", False):
+                # broker shows an executed position even though retcode != 0
+                return {"status": "sent", "meta": diag, "used_lots": lots, "note": "sent_but_retcode_nonzero"}
+            # no execution found: return rejected with diagnostics
+            return {"status": "rejected", "meta": diag, "used_lots": lots}
+        except Exception:
+            # any error during inspect: return rejected with diag
+            return {"status": "rejected", "meta": diag, "used_lots": lots}
+
     except Exception:
         logger.exception("place_order_mt5 failed")
-    return {"status": "error"}
+        return {"status": "error"}
 
 def get_today_trade_count():
-    """ Robust daily trade count with explicit reset logic: - Uses DAILY_RESET_TZ env var to choose reset reference: * "UTC" -> midnight UTC (default) * "LOCAL" -> midnight local machine time * "BROKER"-> broker/server current date (requires MT5 connected) - Reads all 'ts' values from trades DB and filters in Python (safer than SQL datetime comparisons). - Handles ISO timestamps with/without timezone. If a timestamp is naive (no tz), treat it as UTC. - Returns integer count of trades with ts >= chosen day's midnight (in UTC for comparison). """
+    """
+    Robust daily trade count with explicit reset logic:
+      - Uses DAILY_RESET_TZ env var to choose reset reference:
+          * "UTC"   -> midnight UTC (default)
+          * "LOCAL" -> midnight local machine time
+          * "BROKER"-> broker/server current date (requires MT5 connected)
+      - Reads all 'ts' values from trades DB and filters in Python (safer than SQL datetime comparisons).
+      - Handles ISO timestamps with/without timezone. If a timestamp is naive (no tz), treat it as UTC.
+      - Returns integer count of trades with ts >= chosen day's midnight (in UTC for comparison).
+    """
     try:
         # Read all timestamps from DB
         conn = sqlite3.connect(TRADES_DB, timeout=5)
@@ -1232,6 +1359,7 @@ def get_today_trade_count():
                     parsed = parsed.replace(tzinfo=timezone.utc)
             except Exception:
                 continue
+
         # Compare
         try:
             # normalize to UTC-aware datetime
@@ -1246,6 +1374,7 @@ def get_today_trade_count():
                 count += 1
         except Exception:
             continue
+
     return int(count)
 
 def make_decision_for_symbol(symbol: str, live: bool=False):
@@ -1260,6 +1389,7 @@ def make_decision_for_symbol(symbol: str, live: bool=False):
         tech_score = scores["tech"]
         model_score = 0.0
         fundamental_score = 0.0
+
         # optional model scoring (enhanced)
         if SKLEARN_AVAILABLE and model_pipe is not None:
             try:
@@ -1282,6 +1412,7 @@ def make_decision_for_symbol(symbol: str, live: bool=False):
                         model_score = 0.0
             except Exception:
                 model_score = 0.0
+
         # fundamental/sentiment score (ENHANCED: news + econ calendar)
         try:
             news_sent = 0.0
@@ -1333,7 +1464,6 @@ def make_decision_for_symbol(symbol: str, live: bool=False):
         final_signal = None
         if candidate is not None and abs(total_score) >= CURRENT_THRESHOLD:
             final_signal = candidate
-
         decision = {"symbol": symbol, "agg": total_score, "tech": tech_score, "model_score": model_score, "fund_score": fundamental_score, "final": final_signal, "port_scale": port_scale, "paused": False}
         if final_signal:
             entry = float(df_h1["close"].iloc[-1])
@@ -1367,13 +1497,17 @@ def make_decision_for_symbol(symbol: str, live: bool=False):
                 try:
                     status = res.get("status", "unknown")
                     if status == "sent":
-                        emoji = "✅"; status_text = "EXECUTED"
+                        emoji = "✅"
+                        status_text = "EXECUTED"
                     elif status == "rejected":
-                        emoji = "❌"; status_text = "REJECTED"
+                        emoji = "❌"
+                        status_text = "REJECTED"
                     elif status == "autotrading_disabled":
-                        emoji = "⚠️"; status_text = "AUTO TRADING DISABLED"
+                        emoji = "⚠️"
+                        status_text = "AUTO TRADING DISABLED"
                     else:
-                        emoji = "⚠️"; status_text = str(status).upper()
+                        emoji = "⚠️"
+                        status_text = str(status).upper()
                     # format numeric display: round to sensible decimals
                     try:
                         entry_s = f"{float(entry):.2f}"
@@ -1395,13 +1529,13 @@ def make_decision_for_symbol(symbol: str, live: bool=False):
                     logger.exception("Telegram notify failed after live trade")
             else:
                 res = place_order_simulated(symbol, final_signal, lots, entry, sl, tp, tech_score, model_score, regime)
-                decision.update({"entry": entry, "sl": sl, "tp": tp, "lots": lots, "placed": res})
+            decision.update({"entry": entry, "sl": sl, "tp": tp, "lots": lots, "placed": res})
         else:
             logger.info("No confident signal for %s (agg=%.3f)", symbol, total_score)
         return decision
     except Exception:
         logger.exception("make_decision_for_symbol failed for %s", symbol)
-    return None
+        return None
 
 def adapt_and_optimize():
     global CURRENT_THRESHOLD, RISK_PER_TRADE_PCT
@@ -1411,31 +1545,11 @@ def adapt_and_optimize():
         n = len(vals)
         winrate = sum(1 for v in vals if v > 0) / n if n > 0 else 0.0
         logger.info("Adapt: recent winrate=%.3f n=%d", winrate, n)
-
-        # ===== Threshold Adaptation (Proportional + Clamp) =====
-        # Using the block you provided so thresholds adapt proportionally and are clamped
-        if n >= ADAPT_MIN_TRADES:
-            # proportional adjustment
-            adj = -K * (winrate - TARGET_WINRATE)
-
-            # clamp movement to prevent instability
-            if adj > MAX_ADJ:
-                adj = MAX_ADJ
-            elif adj < -MAX_ADJ:
-                adj = -MAX_ADJ
-
-            # apply and enforce bounds
-            CURRENT_THRESHOLD = float(
-                max(MIN_THRESHOLD,
-                    min(MAX_THRESHOLD, CURRENT_THRESHOLD + adj))
-            )
-
-            logger.info(
-                f"Threshold adapted -> winrate={winrate:.3f}, "
-                f"adj={adj:.5f}, new_threshold={CURRENT_THRESHOLD:.5f}"
-            )
-        # =======================================================
-
+        if n >= 40:
+            if winrate < 0.45:
+                CURRENT_THRESHOLD = min(MAX_THRESHOLD, CURRENT_THRESHOLD + 0.005)
+            elif winrate > 0.6:
+                CURRENT_THRESHOLD = max(MIN_THRESHOLD, CURRENT_THRESHOLD - 0.005)
         vols = []
         for s in SYMBOLS:
             tfs = fetch_multi_timeframes(s, period_days=45)
@@ -1511,10 +1625,10 @@ def run_backtest():
     logger.info("Backtest complete")
 
 def confirm_enable_live():
-    if os.getenv("CONFIRM_AUTO", "") == "I UNDERSTAND_THE_RISKS":
+    if os.getenv("CONFIRM_AUTO", "") == "I UNDERSTAND_THE RISKS":
         return True
-    got = input("To enable LIVE trading type exactly: I UNDERSTAND_THE RISKS\nType now: ").strip()
-    return got == "I UNDERSTAND_THE_RISKS"
+    got = input("To enable LIVE trading type exactly: I UNDERSTAND THE RISKS\nType now: ").strip()
+    return got == "I UNDERSTAND THE RISKS"
 
 def setup_and_run(args):
     init_trade_db()
@@ -1523,8 +1637,8 @@ def setup_and_run(args):
         ok = connect_mt5(login=int(MT5_LOGIN) if str(MT5_LOGIN).isdigit() else None, password=MT5_PASSWORD, server=MT5_SERVER)
         if ok:
             logger.info("MT5 connected; preferring MT5 feed/execution")
-        else:
-            logger.info("MT5 not available or credentials not provided - bot will not fetch data")
+    else:
+        logger.info("MT5 not available or credentials not provided - bot will not fetch data")
     if args.backtest:
         run_backtest()
         return
