@@ -106,7 +106,7 @@ MIN_RISK_PER_TRADE_PCT = 0.002
 MAX_RISK_PER_TRADE_PCT = 0.01
 RISK_PER_TRADE_PCT = BASE_RISK_PER_TRADE_PCT
 
-MAX_DAILY_TRADES = int(os.getenv("MAX_DAILY_TRADES", "200"))
+MAX_DAILY_TRADES = int(os.getenv("MAX_DAILY_TRADES", "50"))
 KILL_SWITCH_FILE = os.getenv("KILL_SWITCH_FILE", "STOP_TRADING.flag")
 ADAPT_STATE_FILE = "adapt_state.json"
 TRADES_DB = "trades.db"
@@ -118,6 +118,12 @@ MAX_THRESHOLD = 0.50
 DECISION_SLEEP = int(os.getenv("DECISION_SLEEP", "60"))
 ADAPT_EVERY_CYCLES = 6
 MODEL_MIN_TRAIN = 40
+
+# New proportional adaptation constants (added exactly as you requested)
+ADAPT_MIN_TRADES = 40          # require decent sample size
+TARGET_WINRATE = 0.525        # midpoint between 0.45 and 0.60
+K = 0.04                      # proportional strength
+MAX_ADJ = 0.01                # maximum threshold movement per cycle
 
 # MT5 credentials env
 MT5_LOGIN = os.getenv("MT5_LOGIN")
@@ -136,6 +142,29 @@ TRADING_ECONOMICS_KEY = os.getenv("TRADING_ECONOMICS_KEY", "")
 
 # Pause window before major events (minutes)
 PAUSE_BEFORE_EVENT_MINUTES = int(os.getenv("PAUSE_BEFORE_EVENT_MINUTES", "30"))
+
+# ---------------- --- Telegram helper (ADDED) ----------------
+def send_telegram_message(text: str) -> bool:
+    """ Safe, minimal Telegram notifier used when live trades occur. Returns True if send succeeded, False otherwise. """
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        logger.debug("send_telegram_message: Telegram not configured (missing token or chat id)")
+        return False
+    if not FUNDAMENTAL_AVAILABLE:
+        # requests not available
+        logger.debug("send_telegram_message: requests library not available")
+        return False
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
+        resp = requests.post(url, data=payload, timeout=8)
+        if resp.status_code == 200:
+            return True
+        else:
+            logger.warning("send_telegram_message: non-200 %s %s", resp.status_code, resp.text[:200])
+            return False
+    except Exception:
+        logger.exception("send_telegram_message failed")
+        return False
 
 # ---------------- persistence and state ----------------
 def load_adapt_state():
@@ -1378,12 +1407,8 @@ def make_decision_for_symbol(symbol: str, live: bool=False):
         # small portfolio directional adjustment (scale roughly between 0.6 and 1.4)
         total_score = total_score * (0.5 + 0.5 * port_scale)  # scale in [~0.8,~1.2] depending on port_scale
 
-        # ----- NORMALIZE total_score to [-1.0, 1.0] (ADDED) -----
-        try:
-            total_score = float(max(-1.0, min(1.0, total_score)))
-        except Exception:
-            # fallback: if something odd, clamp conservatively
-            total_score = max(-1.0, min(1.0, float(total_score) if isinstance(total_score, (int, float)) else 0.0))
+        # --- NORMALIZE/CLAMP total_score to [-1.0, 1.0] as requested ---
+        total_score = float(max(-1.0, min(1.0, total_score)))
 
         candidate = None
         if total_score >= 0.18:
@@ -1421,6 +1446,40 @@ def make_decision_for_symbol(symbol: str, live: bool=False):
             if live and not DEMO_SIMULATION:
                 res = place_order_mt5(symbol, final_signal, lots, None, sl, tp)
                 record_trade(symbol, final_signal, entry, sl, tp, lots, status=res.get("status", "unknown"), pnl=0.0, rmult=0.0, regime=regime, score=tech_score, model_score=model_score, meta=res)
+                # TELEGRAM NOTIFICATION: attempt to notify immediately after recording a live trade
+                try:
+                    status = res.get("status", "unknown")
+                    if status == "sent":
+                        emoji = "✅"
+                        status_text = "EXECUTED"
+                    elif status == "rejected":
+                        emoji = "❌"
+                        status_text = "REJECTED"
+                    elif status == "autotrading_disabled":
+                        emoji = "⚠️"
+                        status_text = "AUTO TRADING DISABLED"
+                    else:
+                        emoji = "⚠️"
+                        status_text = str(status).upper()
+                    # format numeric display: round to sensible decimals
+                    try:
+                        entry_s = f"{float(entry):.2f}"
+                        sl_s = f"{float(sl):.2f}"
+                        tp_s = f"{float(tp):.2f}"
+                    except Exception:
+                        entry_s = str(entry); sl_s = str(sl); tp_s = str(tp)
+                    msg = (
+                        f"Ultra_instinct signal\n"
+                        f"{emoji} {status_text}\n"
+                        f"{final_signal} {symbol}\n"
+                        f"Lots: {lots}\n"
+                        f"Entry: {entry_s}\n"
+                        f"SL: {sl_s}\n"
+                        f"TP: {tp_s}"
+                    )
+                    send_telegram_message(msg)
+                except Exception:
+                    logger.exception("Telegram notify failed after live trade")
             else:
                 res = place_order_simulated(symbol, final_signal, lots, entry, sl, tp, tech_score, model_score, regime)
             decision.update({"entry": entry, "sl": sl, "tp": tp, "lots": lots, "placed": res})
@@ -1438,41 +1497,30 @@ def adapt_and_optimize():
         vals = [r[3] for r in recent if r[3] is not None]
         n = len(vals)
         winrate = sum(1 for v in vals if v > 0) / n if n > 0 else 0.0
-
-        # ===== Threshold Adaptation (Proportional + Clamp) =====
-        # Replaced previous simple step logic with proportional controller + clamp
-        ADAPT_MIN_TRADES = 40          # require decent sample size
-        TARGET_WINRATE = 0.525        # midpoint between 0.45 and 0.60
-        K = 0.04                      # proportional strength
-        MAX_ADJ = 0.01                # maximum threshold movement per cycle
-
         logger.info("Adapt: recent winrate=%.3f n=%d", winrate, n)
 
+        # ===== Proportional adaptation (your supplied block) =====
         if n >= ADAPT_MIN_TRADES:
-            try:
-                # proportional adjustment (negative sign because if winrate > target we reduce threshold)
-                adj = -K * (winrate - TARGET_WINRATE)
+            # proportional adjustment (negative sign because if winrate > target we decrease threshold)
+            adj = -K * (winrate - TARGET_WINRATE)
 
-                # clamp movement to prevent instability
-                if adj > MAX_ADJ:
-                    adj = MAX_ADJ
-                elif adj < -MAX_ADJ:
-                    adj = -MAX_ADJ
+            # clamp movement to prevent instability
+            if adj > MAX_ADJ:
+                adj = MAX_ADJ
+            elif adj < -MAX_ADJ:
+                adj = -MAX_ADJ
 
-                # apply and enforce bounds
-                CURRENT_THRESHOLD = float(
-                    max(MIN_THRESHOLD,
-                        min(MAX_THRESHOLD, CURRENT_THRESHOLD + adj))
-                )
+            # apply and enforce bounds
+            CURRENT_THRESHOLD = float(
+                max(MIN_THRESHOLD,
+                    min(MAX_THRESHOLD, CURRENT_THRESHOLD + adj))
+            )
 
-                logger.info(
-                    "Threshold adapted -> winrate=%.3f, adj=%.5f, new_threshold=%.5f",
-                    winrate, adj, CURRENT_THRESHOLD
-                )
-            except Exception:
-                logger.exception("Threshold adaptation failed, leaving CURRENT_THRESHOLD unchanged")
+            logger.info(
+                f"Threshold adapted -> winrate={winrate:.3f}, adj={adj:.5f}, new_threshold={CURRENT_THRESHOLD:.5f}"
+            )
+        # =================================================================
 
-        # ----- rest of adapt logic (risk scaling / portfolio recompute) remains unchanged -----
         vols = []
         for s in SYMBOLS:
             tfs = fetch_multi_timeframes(s, period_days=45)
@@ -1548,10 +1596,34 @@ def run_backtest():
     logger.info("Backtest complete")
 
 def confirm_enable_live():
-    if os.getenv("CONFIRM_AUTO", "") == "I UNDERSTAND_THE_RISKS":
-        return True
-    got = input("To enable LIVE trading type exactly: I UNDERSTAND THE RISKS\nType now: ").strip()
-    return got == "I UNDERSTAND_THE_RISKS"
+    """
+    Robust confirmation:
+      - Accepts CONFIRM_AUTO env var in forms:
+          I_UNDERSTAND_THE_RISKS
+          I UNDERSTAND THE RISKS
+          true / 1 / yes
+      - Otherwise prompts the user to type exactly: I UNDERSTAND THE RISKS
+    """
+    env = os.getenv("CONFIRM_AUTO")
+    if env:
+        try:
+            # normalize: replace underscores with spaces and uppercase
+            norm = str(env).replace("_", " ").strip().upper()
+            if norm == "I UNDERSTAND THE RISKS":
+                logger.info("CONFIRM_AUTO environment variable detected and accepted")
+                return True
+            # also accept common truthy forms
+            if str(env).strip().lower() in ("1", "true", "yes", "y"):
+                logger.info("CONFIRM_AUTO set to truthy value; treating as acceptance")
+                return True
+        except Exception:
+            pass
+    # fallback: interactive prompt
+    try:
+        got = input("To enable LIVE trading type exactly: I UNDERSTAND THE RISKS\nType now: ").strip()
+    except Exception:
+        return False
+    return got.strip().upper() == "I UNDERSTAND THE RISKS"
 
 def setup_and_run(args):
     init_trade_db()
