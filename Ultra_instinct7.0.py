@@ -106,15 +106,15 @@ MIN_RISK_PER_TRADE_PCT = 0.002
 MAX_RISK_PER_TRADE_PCT = 0.01
 RISK_PER_TRADE_PCT = BASE_RISK_PER_TRADE_PCT
 
-MAX_DAILY_TRADES = int(os.getenv("MAX_DAILY_TRADES", "200"))
+MAX_DAILY_TRADES = int(os.getenv("MAX_DAILY_TRADES", "50"))
 KILL_SWITCH_FILE = os.getenv("KILL_SWITCH_FILE", "STOP_TRADING.flag")
 ADAPT_STATE_FILE = "adapt_state.json"
 TRADES_DB = "trades.db"
 MODEL_FILE = "ultra_instinct_model.joblib"
 TRADES_CSV = "trades.csv"
-CURRENT_THRESHOLD = float(os.getenv("CURRENT_THRESHOLD", "0.08"))
-MIN_THRESHOLD = 0.06
-MAX_THRESHOLD = 0.35
+CURRENT_THRESHOLD = float(os.getenv("CURRENT_THRESHOLD", "0.18"))
+MIN_THRESHOLD = 0.12
+MAX_THRESHOLD = 0.50
 DECISION_SLEEP = int(os.getenv("DECISION_SLEEP", "60"))
 ADAPT_EVERY_CYCLES = 6
 MODEL_MIN_TRAIN = 40
@@ -139,10 +139,7 @@ PAUSE_BEFORE_EVENT_MINUTES = int(os.getenv("PAUSE_BEFORE_EVENT_MINUTES", "30"))
 
 # ---------------- --- Telegram helper (ADDED) ----------------
 def send_telegram_message(text: str) -> bool:
-    """
-    Safe, minimal Telegram notifier used when live trades occur.
-    Returns True if send succeeded, False otherwise.
-    """
+    """ Safe, minimal Telegram notifier used when live trades occur. Returns True if send succeeded, False otherwise. """
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         logger.debug("send_telegram_message: Telegram not configured (missing token or chat id)")
         return False
@@ -725,8 +722,9 @@ def fetch_fundamental_score(symbol: str, lookback_days: int = 7) -> float:
         neg_words = {"fall", "drop", "down", "loss", "negative", "bear", "miss", "misses", "crash", "decline", "lower"}
         score = 0.0
         for a in articles:
-            title = a.get("title") or ""
-            desc = a.get("description") or ""
+            # Ensure we never concatenate None
+            title = str(a.get("title") or "")
+            desc = str(a.get("description") or "")
             txt = (title + " " + desc).lower()
             p = sum(1 for w in pos_words if w in txt)
             n = sum(1 for w in neg_words if w in txt)
@@ -829,6 +827,7 @@ def fetch_economic_calendar_score(symbol: str, lookback_hours: int = 6, lookahea
         for e in related:
             actual = e.get("Actual") or e.get("actual") or e.get("Value") or e.get("value")
             forecast = e.get("Consensus") or e.get("Forecast") or e.get("consensus") or e.get("forecast")
+            # sometimes actual/forecast are strings; attempt numeric compare
             try:
                 if actual is None or str(actual).strip() == "":
                     continue
@@ -842,6 +841,7 @@ def fetch_economic_calendar_score(symbol: str, lookback_hours: int = 6, lookahea
                     score -= 1.0
                 count += 1
             except Exception:
+                # if numeric parse fails, skip this event for scoring but still count as event
                 count += 1
                 continue
         if count == 0:
@@ -879,10 +879,13 @@ def should_pause_for_events(symbol: str, lookahead_minutes: int = 30) -> (bool, 
                         continue
             if when is None:
                 continue
+            # compute minutes to event
             diff = (when.to_pydatetime().replace(tzinfo=None) - now).total_seconds() / 60.0
             if diff < 0:
+                # already occurred; skip
                 continue
             if diff <= lookahead_minutes:
+                # check if currency matches
                 title = (e.get("Event") or e.get("Title") or "").lower()
                 country = (e.get("Country") or "").upper()
                 for c in currs:
@@ -1403,12 +1406,12 @@ def make_decision_for_symbol(symbol: str, live: bool=False):
         total_score = total_score * (0.5 + 0.5 * port_scale)  # scale in [~0.8,~1.2] depending on port_scale
 
         candidate = None
-        if total_score >= 0.08:
+        if total_score >= 0.18:
             candidate = "BUY"
-        if total_score <= -0.08:
+        if total_score <= -0.18:
             candidate = "SELL"
         final_signal = None
-        if candidate is not None and abs(total_score) >= 0.06:
+        if candidate is not None and abs(total_score) >= 0.15:
             final_signal = candidate
         decision = {"symbol": symbol, "agg": total_score, "tech": tech_score, "model_score": model_score, "fund_score": fundamental_score, "final": final_signal, "port_scale": port_scale, "paused": False}
         if final_signal:
@@ -1441,15 +1444,36 @@ def make_decision_for_symbol(symbol: str, live: bool=False):
                 record_trade(symbol, final_signal, entry, sl, tp, lots, status=res.get("status", "unknown"), pnl=0.0, rmult=0.0, regime=regime, score=tech_score, model_score=model_score, meta=res)
                 # TELEGRAM NOTIFICATION: attempt to notify immediately after recording a live trade
                 try:
-                    # Compose a concise message
+                    status = res.get("status", "unknown")
+                    if status == "sent":
+                        emoji = "✅"
+                        status_text = "EXECUTED"
+                    elif status == "rejected":
+                        emoji = "❌"
+                        status_text = "REJECTED"
+                    elif status == "autotrading_disabled":
+                        emoji = "⚠️"
+                        status_text = "AUTO TRADING DISABLED"
+                    else:
+                        emoji = "⚠️"
+                        status_text = str(status).upper()
+
+                    # format numeric display: round to sensible decimals
+                    try:
+                        entry_s = f"{float(entry):.2f}"
+                        sl_s = f"{float(sl):.2f}"
+                        tp_s = f"{float(tp):.2f}"
+                    except Exception:
+                        entry_s = str(entry); sl_s = str(sl); tp_s = str(tp)
+
                     msg = (
-                        f"🚀 LIVE TRADE\n"
+                        f"Ultra_instinct signal\n"
+                        f"{emoji} {status_text}\n"
                         f"{final_signal} {symbol}\n"
                         f"Lots: {lots}\n"
-                        f"Entry: {entry}\n"
-                        f"SL: {sl}\n"
-                        f"TP: {tp}\n"
-                        f"Status: {res.get('status')}"
+                        f"Entry: {entry_s}\n"
+                        f"SL: {sl_s}\n"
+                        f"TP: {tp_s}"
                     )
                     send_telegram_message(msg)
                 except Exception:
