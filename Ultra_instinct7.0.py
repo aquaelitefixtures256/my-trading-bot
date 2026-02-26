@@ -106,7 +106,7 @@ MIN_RISK_PER_TRADE_PCT = 0.002
 MAX_RISK_PER_TRADE_PCT = 0.01
 RISK_PER_TRADE_PCT = BASE_RISK_PER_TRADE_PCT
 
-MAX_DAILY_TRADES = int(os.getenv("MAX_DAILY_TRADES", "50"))
+MAX_DAILY_TRADES = int(os.getenv("MAX_DAILY_TRADES", "200"))
 KILL_SWITCH_FILE = os.getenv("KILL_SWITCH_FILE", "STOP_TRADING.flag")
 ADAPT_STATE_FILE = "adapt_state.json"
 TRADES_DB = "trades.db"
@@ -722,9 +722,8 @@ def fetch_fundamental_score(symbol: str, lookback_days: int = 7) -> float:
         neg_words = {"fall", "drop", "down", "loss", "negative", "bear", "miss", "misses", "crash", "decline", "lower"}
         score = 0.0
         for a in articles:
-            # Ensure we never concatenate None
-            title = str(a.get("title") or "")
-            desc = str(a.get("description") or "")
+            title = a.get("title") or ""
+            desc = a.get("description") or ""
             txt = (title + " " + desc).lower()
             p = sum(1 for w in pos_words if w in txt)
             n = sum(1 for w in neg_words if w in txt)
@@ -804,22 +803,25 @@ def fetch_economic_calendar_score(symbol: str, lookback_hours: int = 6, lookahea
         related = []
         currs = _symbol_to_currencies(symbol)
         for e in evs:
-            # Impact field sometimes spelled differently; try common keys
-            impact = e.get("Impact") or e.get("importance") or e.get("importanceText") or e.get("impact", "")
-            country = (e.get("Country") or e.get("country") or "").upper()
-            title = (e.get("Event") or e.get("Title") or e.get("event") or "").lower()
-            # filter by high impact
-            if not impact:
+            try:
+                # Impact field sometimes spelled differently; try common keys
+                impact = e.get("Impact") or e.get("importance") or e.get("importanceText") or e.get("impact", "")
+                country = (e.get("Country") or e.get("country") or "").upper()
+                title = (e.get("Event") or e.get("Title") or e.get("event") or "").lower()
+                # filter by high impact
+                if not impact:
+                    continue
+                if str(impact).lower() not in ("high", "h", "high impact"):
+                    continue
+                # check if event mentions one of symbol currencies by country or code
+                match = False
+                for c in currs:
+                    if c and (c.lower() in title or c.upper() == country or c.upper() in str(e.get("Category", "")).upper()):
+                        match = True
+                if match:
+                    related.append(e)
+            except Exception:
                 continue
-            if str(impact).lower() not in ("high", "h", "high impact"):
-                continue
-            # check if event mentions one of symbol currencies by country or code
-            match = False
-            for c in currs:
-                if c and (c.lower() in title or c.upper() == country or c.upper() in str(e.get("Category", "")).upper()):
-                    match = True
-            if match:
-                related.append(e)
         if not related:
             return 0.0
         score = 0.0
@@ -827,7 +829,6 @@ def fetch_economic_calendar_score(symbol: str, lookback_hours: int = 6, lookahea
         for e in related:
             actual = e.get("Actual") or e.get("actual") or e.get("Value") or e.get("value")
             forecast = e.get("Consensus") or e.get("Forecast") or e.get("consensus") or e.get("forecast")
-            # sometimes actual/forecast are strings; attempt numeric compare
             try:
                 if actual is None or str(actual).strip() == "":
                     continue
@@ -841,7 +842,6 @@ def fetch_economic_calendar_score(symbol: str, lookback_hours: int = 6, lookahea
                     score -= 1.0
                 count += 1
             except Exception:
-                # if numeric parse fails, skip this event for scoring but still count as event
                 count += 1
                 continue
         if count == 0:
@@ -865,7 +865,7 @@ def should_pause_for_events(symbol: str, lookahead_minutes: int = 30) -> (bool, 
         now = datetime.utcnow()
         currs = _symbol_to_currencies(symbol)
         for e in evs:
-            impact = e.get("Impact") or e.get("importance") or e.get("impact", "")
+            impact = e.get("Impact") or e.get("importance") or e.get("importanceText") or e.get("impact", "")
             if not impact or str(impact).lower() not in ("high", "h", "high impact"):
                 continue
             # parse event datetime
@@ -879,13 +879,10 @@ def should_pause_for_events(symbol: str, lookahead_minutes: int = 30) -> (bool, 
                         continue
             if when is None:
                 continue
-            # compute minutes to event
             diff = (when.to_pydatetime().replace(tzinfo=None) - now).total_seconds() / 60.0
             if diff < 0:
-                # already occurred; skip
                 continue
             if diff <= lookahead_minutes:
-                # check if currency matches
                 title = (e.get("Event") or e.get("Title") or "").lower()
                 country = (e.get("Country") or "").upper()
                 for c in currs:
@@ -1073,13 +1070,65 @@ def place_order_simulated(symbol, side, lots, entry, sl, tp, score, model_score,
     record_trade(symbol, side, entry, sl, tp, lots, status="sim_open", pnl=0.0, rmult=0.0, regime=regime, score=score, model_score=model_score)
     return {"status":"sim_open"}
 
+# ----- NEW: helper to inspect broker state after sending an order -----
+def inspect_broker_for_trade(broker_symbol: str, expected_side: str, expected_lots: float, expected_price: float, look_seconds: int = 6):
+    """
+    After sending an order, call this to quickly check if a position or order for the symbol exists.
+    Returns dict { "positions": [...], "orders": [...], "found_executed": bool }
+    """
+    out = {"positions": [], "orders": [], "found_executed": False}
+    if not MT5_AVAILABLE or not _mt5_connected:
+        return out
+    try:
+        # small wait so broker can update (short)
+        time.sleep(min(look_seconds, 6))
+        try:
+            pos = _mt5.positions_get(symbol=broker_symbol) or []
+        except Exception:
+            pos = []
+        try:
+            ords = _mt5.orders_get(symbol=broker_symbol) or []
+        except Exception:
+            ords = []
+
+        # convert to simple dicts/strs for logging
+        out["positions"] = [str(p) for p in pos]
+        out["orders"] = [str(o) for o in ords]
+
+        # Heuristic: if any position exists for the symbol with volume close to expected_lots -> assume executed
+        for p in pos:
+            try:
+                vol = float(getattr(p, "volume", 0.0))
+                sym = getattr(p, "symbol", "")
+                # compare symbol and approximate volume
+                if sym and sym.lower() == broker_symbol.lower() and abs(vol - expected_lots) <= max(0.01, 0.1 * expected_lots):
+                    out["found_executed"] = True
+                    break
+            except Exception:
+                continue
+
+        # Also look at recent orders (if pending became market -> position above)
+        if not out["found_executed"]:
+            for o in ords:
+                try:
+                    sym = getattr(o, "symbol", "")
+                    vol = float(getattr(o, "volume", 0.0))
+                    if sym and sym.lower() == broker_symbol.lower() and abs(vol - expected_lots) <= max(0.01, 0.1 * expected_lots):
+                        # a pending order exists — treat as not executed but present
+                        out["found_executed"] = False
+                        break
+                except Exception:
+                    continue
+
+    except Exception:
+        logger.exception("inspect_broker_for_trade failed")
+    return out
+
+# ----- REPLACED place_order_mt5: richer diagnostics + post-inspect -----
 def place_order_mt5(symbol, action, lot, price, sl, tp):
     """
-    Broker-aware order sender:
-      - maps symbol
-      - enforces volume_min and volume_step
-      - enforces minimum stop level (SL/TP) distances in points (with safe fallbacks)
-      - returns clear status explaining why MT5 refused the order
+    Replacement place_order_mt5: returns a richer dict including retcode, result string, plus positions/orders snapshot.
+    If the retcode is non-zero we additionally inspect broker positions/orders; if a matching position is found we return status 'sent' anyway.
     """
     if not MT5_AVAILABLE or not _mt5_connected:
         return {"status": "mt5_not_connected"}
@@ -1087,12 +1136,10 @@ def place_order_mt5(symbol, action, lot, price, sl, tp):
     try:
         broker = map_symbol_to_broker(symbol)
 
-        # get symbol info (trade properties) and tick
         si = _mt5.symbol_info(broker)
         if si is None:
             return {"status": "symbol_not_found", "symbol": broker}
 
-        # ensure symbol is visible/selected
         try:
             if not si.visible:
                 _mt5.symbol_select(broker, True)
@@ -1103,39 +1150,31 @@ def place_order_mt5(symbol, action, lot, price, sl, tp):
         if tick is None:
             return {"status": "no_tick", "symbol": broker}
 
-        # read broker constraints with safe fallbacks
-        vol_min   = getattr(si, "volume_min", None) or getattr(si, "volume_min", 0.01) or 0.01
-        vol_step  = getattr(si, "volume_step", None) or getattr(si, "volume_step", 0.01) or 0.01
-        vol_max   = getattr(si, "volume_max", None) or getattr(si, "volume_max", None)
+        # volume constraints and step
+        vol_min = getattr(si, "volume_min", None) or getattr(si, "volume_min", 0.01) or 0.01
+        vol_step = getattr(si, "volume_step", None) or getattr(si, "volume_step", 0.01) or 0.01
+        vol_max = getattr(si, "volume_max", None) or None
 
-        # points/precision info (some symbols have 'point' attribute)
-        point     = getattr(si, "point", None) or getattr(si, "trade_tick_size", None) or getattr(si, "tick_size", None) or 0.00001
-        stop_level = getattr(si, "stop_level", None)  # in *points* typically
+        point = getattr(si, "point", None) or getattr(si, "trade_tick_size", None) or getattr(si, "tick_size", None) or 0.00001
+        stop_level = getattr(si, "stop_level", None)
 
-        # compute minimum SL/TP distance in price units
         if stop_level is not None and stop_level >= 0:
             min_sl_dist = float(stop_level) * float(point)
         else:
-            # fallback: require at least 10 * point distance (safe default)
             min_sl_dist = float(point) * 10.0
 
-        # choose order price (market price if not provided)
         order_price = price if price is not None else (tick.ask if action == "BUY" else tick.bid)
 
-        # ensure lot size respects broker's min and step
         try:
             lots = float(lot)
         except Exception:
             lots = float(vol_min)
-        # snap lots up to nearest multiple of vol_step and >= vol_min
+        # snap
         try:
             if vol_step > 0:
-                # compute number of steps from vol_min to requested lots
                 steps = max(0, int((lots - vol_min) // vol_step))
                 lots_adj = vol_min + steps * vol_step
-                # if requested greater than lots_adj, try to ceil to next step
                 if lots > lots_adj:
-                    # ceil to next step
                     steps_ceil = int(((lots - vol_min) + vol_step - 1e-12) // vol_step)
                     lots_adj = vol_min + steps_ceil * vol_step
                 lots = round(float(max(vol_min, lots_adj)), 2)
@@ -1144,7 +1183,6 @@ def place_order_mt5(symbol, action, lot, price, sl, tp):
         except Exception:
             lots = float(max(vol_min, 0.01))
 
-        # validate SL/TP distances: compute absolute distances from entry
         entry_price = float(order_price)
         def valid_distance(dist):
             try:
@@ -1160,7 +1198,6 @@ def place_order_mt5(symbol, action, lot, price, sl, tp):
             tp_dist = abs(entry_price - float(tp))
             tp_ok = valid_distance(tp_dist)
 
-        # if SL/TP invalid, try to adjust them to the minimum allowed distance in the correct direction
         if not sl_ok:
             if action == "BUY":
                 sl = entry_price - min_sl_dist
@@ -1174,11 +1211,9 @@ def place_order_mt5(symbol, action, lot, price, sl, tp):
                 tp = entry_price - (min_sl_dist * 2.0)
             tp_ok = True
 
-        # final sanity: ensure lots >= vol_min
         if lots < vol_min:
             lots = float(vol_min)
 
-        # respect maximum volume if reported
         if vol_max and lots > vol_max:
             return {"status": "volume_too_large", "requested": lots, "max": vol_max}
 
@@ -1199,16 +1234,32 @@ def place_order_mt5(symbol, action, lot, price, sl, tp):
         }
 
         res = _mt5.order_send(req)
-        retcode = getattr(res, "retcode", None)
+        # build diagnostic dict
+        diag = {"status_raw": None, "retcode": None, "result": None, "deal": None, "order": None, "comment": None}
+        try:
+            diag["retcode"] = getattr(res, "retcode", None)
+            diag["result"] = str(res)
+            diag["deal"] = getattr(res, "deal", None)
+            diag["order"] = getattr(res, "order", None)
+            diag["comment"] = getattr(res, "comment", None)
+        except Exception:
+            diag["result"] = str(res)
 
-        # return clearer statuses for common retcodes
-        if retcode == 10027:
-            return {"status": "autotrading_disabled", "retcode": retcode, "result": str(res)}
-        if retcode is not None and retcode != 0:
-            return {"status": "rejected", "retcode": retcode, "result": str(res)}
-
-        # success (retcode 0)
-        return {"status": "sent", "result": str(res), "used_lots": lots}
+        # if retcode == 0 -> success, return 'sent'
+        if diag.get("retcode", 0) == 0 or diag.get("retcode") in (0, None):
+            return {"status": "sent", "meta": diag, "used_lots": lots}
+        # otherwise retcode != 0. Inspect positions/orders to see if broker executed anything.
+        try:
+            inspect = inspect_broker_for_trade(broker_symbol=broker, expected_side=action, expected_lots=lots, expected_price=entry_price, look_seconds=4)
+            diag["post_inspect"] = inspect
+            if inspect.get("found_executed", False):
+                # broker shows an executed position even though retcode != 0
+                return {"status": "sent", "meta": diag, "used_lots": lots, "note": "sent_but_retcode_nonzero"}
+            # no execution found: return rejected with diagnostics
+            return {"status": "rejected", "meta": diag, "used_lots": lots}
+        except Exception:
+            # any error during inspect: return rejected with diag
+            return {"status": "rejected", "meta": diag, "used_lots": lots}
 
     except Exception:
         logger.exception("place_order_mt5 failed")
@@ -1457,7 +1508,6 @@ def make_decision_for_symbol(symbol: str, live: bool=False):
                     else:
                         emoji = "⚠️"
                         status_text = str(status).upper()
-
                     # format numeric display: round to sensible decimals
                     try:
                         entry_s = f"{float(entry):.2f}"
@@ -1465,7 +1515,6 @@ def make_decision_for_symbol(symbol: str, live: bool=False):
                         tp_s = f"{float(tp):.2f}"
                     except Exception:
                         entry_s = str(entry); sl_s = str(sl); tp_s = str(tp)
-
                     msg = (
                         f"Ultra_instinct signal\n"
                         f"{emoji} {status_text}\n"
@@ -1576,7 +1625,7 @@ def run_backtest():
     logger.info("Backtest complete")
 
 def confirm_enable_live():
-    if os.getenv("CONFIRM_AUTO", "") == "I UNDERSTAND_THE_RISKS":
+    if os.getenv("CONFIRM_AUTO", "") == "I UNDERSTAND_THE RISKS":
         return True
     got = input("To enable LIVE trading type exactly: I UNDERSTAND THE RISKS\nType now: ").strip()
     return got == "I UNDERSTAND THE RISKS"
