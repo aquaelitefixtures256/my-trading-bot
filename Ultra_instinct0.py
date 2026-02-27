@@ -2,15 +2,17 @@
 """
 Ultra_instinct.py  -- MT5-only (no Yahoo) defensive trading bot.
 Minimal surgical fixes from your previous file:
-  - Added robust threshold validation/clamping to prevent negative CURRENT_THRESHOLD or invalid bounds.
+  - Removed yfinance fallback entirely
+  - Robust MT5 initialization retry (attempt to start terminal)
+  - Robust MT5 data handling and broker-symbol mapping (handles suffixes like .m or m)
 Everything else (strategy, thresholds, adapt/optimizer, db, telegram) is left intact.
 Run as you did before:
   set MT5_LOGIN=...
   set MT5_PASSWORD=...
   set MT5_SERVER=...
   set MT5_PATH="C:\Program Files\MetaTrader 5\terminal64.exe"
-  python Ultra_instinct7.0.py --backtest
-  python Ultra_instinct7.0.py --loop
+  python Ultra_instinct.py --backtest
+  python Ultra_instinct.py --loop
 """
 from __future__ import annotations
 import os
@@ -75,6 +77,13 @@ except Exception:
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("Ultra_instinct")
 
+# ---------------- small helper used for confirmation normalization ----------------
+def _normalize_confirm_text(s: Optional[str]) -> str:
+    """Normalize confirm strings: treat underscores/spaces equivalently and uppercase."""
+    if not s:
+        return ""
+    return " ".join(str(s).replace("_", " ").split()).upper()
+
 # ---------------- Configuration (unchanged logic except requested fixes) ----------------
 # Add USOIL symbol and switch broker suffix to 'm' (e.g. XAUUSDm)
 SYMBOLS = ["EURUSD", "XAGUSD", "XAUUSD", "BTCUSD", "USDJPY", "USOIL"]
@@ -94,98 +103,25 @@ TIMEFRAMES = {"M30": "30m", "H1": "60m"}  # M30 + H1 as you requested
 # Safety defaults - DEMO removed: go straight to live (you said you understand the risks)
 DEMO_SIMULATION = False
 AUTO_EXECUTE = True
-# if env var set, keep parity (but we already default to live)
-if os.getenv("CONFIRM_AUTO", "") == "I UNDERSTAND_THE RISKS":
-    DEMO_SIMULATION = False
-    AUTO_EXECUTE = True
 
-# Read and validate numeric thresholds / risk values safely
-def _safe_float_env(name: str, default: float) -> float:
-    v = os.getenv(name)
-    if v is None or str(v).strip() == "":
-        return float(default)
-    try:
-        return float(v)
-    except Exception:
-        try:
-            return float(v.replace(",", "."))
-        except Exception:
-            logger.warning("Invalid env %s=%r, using default %s", name, v, default)
-            return float(default)
-
-BASE_RISK_PER_TRADE_PCT = _safe_float_env("BASE_RISK_PER_TRADE_PCT", 0.003)
+BASE_RISK_PER_TRADE_PCT = float(os.getenv("BASE_RISK_PER_TRADE_PCT", "0.003"))
 MIN_RISK_PER_TRADE_PCT = 0.002
 MAX_RISK_PER_TRADE_PCT = 0.01
-RISK_PER_TRADE_PCT = float(BASE_RISK_PER_TRADE_PCT)
+RISK_PER_TRADE_PCT = BASE_RISK_PER_TRADE_PCT
 
-# Thresholds (read from env if present) — but validated afterwards
-MIN_THRESHOLD = _safe_float_env("MIN_THRESHOLD", 0.12)
-CURRENT_THRESHOLD = _safe_float_env("CURRENT_THRESHOLD", 0.13)
-MAX_THRESHOLD = _safe_float_env("MAX_THRESHOLD", 0.50)
-
-DECISION_SLEEP = int(os.getenv("DECISION_SLEEP", "60"))
-ADAPT_EVERY_CYCLES = 6
-MODEL_MIN_TRAIN = 40
-
-# Add a single place to validate/clamp thresholds to prevent negatives or invalid ranges
-def validate_and_clamp_thresholds():
-    """
-    Ensure MIN_THRESHOLD, MAX_THRESHOLD, CURRENT_THRESHOLD are sane:
-      - Non-negative
-      - MIN <= CURRENT <= MAX
-      - If env provided nonsense, auto-correct with safe defaults
-    """
-    global MIN_THRESHOLD, MAX_THRESHOLD, CURRENT_THRESHOLD
-    try:
-        # force numeric
-        MIN_THRESHOLD = float(MIN_THRESHOLD)
-    except Exception:
-        MIN_THRESHOLD = 0.12
-    try:
-        MAX_THRESHOLD = float(MAX_THRESHOLD)
-    except Exception:
-        MAX_THRESHOLD = 0.50
-    try:
-        CURRENT_THRESHOLD = float(CURRENT_THRESHOLD)
-    except Exception:
-        CURRENT_THRESHOLD = 0.13
-
-    # disallow negative thresholds
-    if MIN_THRESHOLD < 0:
-        logger.warning("MIN_THRESHOLD was negative (%s) — forcing to abs()", MIN_THRESHOLD)
-        MIN_THRESHOLD = abs(MIN_THRESHOLD)
-    if MAX_THRESHOLD < 0:
-        logger.warning("MAX_THRESHOLD was negative (%s) — forcing to abs()", MAX_THRESHOLD)
-        MAX_THRESHOLD = abs(MAX_THRESHOLD)
-    if CURRENT_THRESHOLD < 0:
-        logger.warning("CURRENT_THRESHOLD was negative (%s) — forcing to abs()", CURRENT_THRESHOLD)
-        CURRENT_THRESHOLD = abs(CURRENT_THRESHOLD)
-
-    # ensure max is at least slightly above min
-    if MAX_THRESHOLD <= MIN_THRESHOLD:
-        logger.warning("MAX_THRESHOLD <= MIN_THRESHOLD (%s <= %s). Adjusting MAX_THRESHOLD = MIN_THRESHOLD + 0.01", MAX_THRESHOLD, MIN_THRESHOLD)
-        MAX_THRESHOLD = MIN_THRESHOLD + 0.01
-
-    # clamp current into [min, max]
-    if CURRENT_THRESHOLD < MIN_THRESHOLD or CURRENT_THRESHOLD > MAX_THRESHOLD:
-        logger.info("Clamping CURRENT_THRESHOLD %.6f into [%s, %s]", CURRENT_THRESHOLD, MIN_THRESHOLD, MAX_THRESHOLD)
-        CURRENT_THRESHOLD = max(MIN_THRESHOLD, min(MAX_THRESHOLD, CURRENT_THRESHOLD))
-
-    # ensure they are floats
-    MIN_THRESHOLD = float(MIN_THRESHOLD)
-    MAX_THRESHOLD = float(MAX_THRESHOLD)
-    CURRENT_THRESHOLD = float(CURRENT_THRESHOLD)
-
-# run validator at startup
-validate_and_clamp_thresholds()
-
-# Safety/environmental limits
-MAX_DAILY_TRADES = int(os.getenv("MAX_DAILY_TRADES", "200"))
+MAX_DAILY_TRADES = int(os.getenv("MAX_DAILY_TRADES", "50"))
 KILL_SWITCH_FILE = os.getenv("KILL_SWITCH_FILE", "STOP_TRADING.flag")
 ADAPT_STATE_FILE = "adapt_state.json"
 TRADES_DB = "trades.db"
 MODEL_FILE = "ultra_instinct_model.joblib"
 TRADES_CSV = "trades.csv"
+CURRENT_THRESHOLD = float(os.getenv("CURRENT_THRESHOLD", "0.13"))
+MIN_THRESHOLD = 0.12
+MAX_THRESHOLD = 0.50
+DECISION_SLEEP = int(os.getenv("DECISION_SLEEP", "60"))
+ADAPT_EVERY_CYCLES = 6
+MODEL_MIN_TRAIN = 40
+
 # MT5 credentials env
 MT5_LOGIN = os.getenv("MT5_LOGIN")
 MT5_PASSWORD = os.getenv("MT5_PASSWORD")
@@ -204,6 +140,34 @@ TRADING_ECONOMICS_KEY = os.getenv("TRADING_ECONOMICS_KEY", "")
 # Pause window before major events (minutes)
 PAUSE_BEFORE_EVENT_MINUTES = int(os.getenv("PAUSE_BEFORE_EVENT_MINUTES", "30"))
 
+# Honor CONFIRM_AUTO env if set (normalized)
+if _normalize_confirm_text(os.getenv("CONFIRM_AUTO", "")) == "I UNDERSTAND THE RISKS":
+    DEMO_SIMULATION = False
+    AUTO_EXECUTE = True
+
+# ---------------- --- Telegram helper (ADDED) ----------------
+def send_telegram_message(text: str) -> bool:
+    """ Safe, minimal Telegram notifier used when live trades occur. Returns True if send succeeded, False otherwise. """
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        logger.debug("send_telegram_message: Telegram not configured (missing token or chat id)")
+        return False
+    if not FUNDAMENTAL_AVAILABLE:
+        # requests not available
+        logger.debug("send_telegram_message: requests library not available")
+        return False
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
+        resp = requests.post(url, data=payload, timeout=8)
+        if resp.status_code == 200:
+            return True
+        else:
+            logger.warning("send_telegram_message: non-200 %s %s", resp.status_code, resp.text[:200])
+            return False
+    except Exception:
+        logger.exception("send_telegram_message failed")
+        return False
+
 # ---------------- persistence and state ----------------
 def load_adapt_state():
     global CURRENT_THRESHOLD, RISK_PER_TRADE_PCT
@@ -211,19 +175,8 @@ def load_adapt_state():
         try:
             with open(ADAPT_STATE_FILE, "r", encoding="utf-8") as f:
                 st = json.load(f)
-            # only update if present
-            if "threshold" in st:
-                try:
-                    CURRENT_THRESHOLD = float(st.get("threshold", CURRENT_THRESHOLD))
-                except Exception:
-                    pass
-            if "risk" in st:
-                try:
-                    RISK_PER_TRADE_PCT = float(st.get("risk", RISK_PER_TRADE_PCT))
-                except Exception:
-                    pass
-            # re-validate thresholds after loading persisted state
-            validate_and_clamp_thresholds()
+            CURRENT_THRESHOLD = float(st.get("threshold", CURRENT_THRESHOLD))
+            RISK_PER_TRADE_PCT = float(st.get("risk", RISK_PER_TRADE_PCT))
             logger.info("Loaded adapt_state threshold=%.3f risk=%.5f", CURRENT_THRESHOLD, RISK_PER_TRADE_PCT)
         except Exception:
             logger.exception("load_adapt_state failed")
@@ -1098,7 +1051,6 @@ def light_optimizer(symbols, budget=12):
         step = 0.4
         CURRENT_THRESHOLD = float(max(MIN_THRESHOLD, min(MAX_THRESHOLD, CURRENT_THRESHOLD * (1 - step) + best_thresh * step)))
         RISK_PER_TRADE_PCT = float(max(MIN_RISK_PER_TRADE_PCT, min(MAX_RISK_PER_TRADE_PCT, RISK_PER_TRADE_PCT * (1 - step) + best_risk * step)))
-        validate_and_clamp_thresholds()
         save_adapt_state()
         logger.info("Optimizer applied new threshold=%.3f risk=%.5f", CURRENT_THRESHOLD, RISK_PER_TRADE_PCT)
         return {"before": base_expect, "after": best_expect, "threshold": CURRENT_THRESHOLD, "risk": RISK_PER_TRADE_PCT}
@@ -1453,11 +1405,11 @@ def make_decision_for_symbol(symbol: str, live: bool=False):
         # Adjusted weights for stronger fundamentals influence in real world
         total_score = (0.40 * tech_score) + (0.25 * model_score) + (0.35 * fundamental_score)
 
-        # ---- NORMALIZE total_score to [-1, 1] to be safe ----
-        if total_score > 1.0:
-            total_score = 1.0
-        elif total_score < -1.0:
-            total_score = -1.0
+        # normalize total_score into [-1, 1] explicitly (safety)
+        try:
+            total_score = max(-1.0, min(1.0, float(total_score)))
+        except Exception:
+            total_score = float(total_score)
 
         # small portfolio directional adjustment (scale roughly between 0.6 and 1.4)
         total_score = total_score * (0.5 + 0.5 * port_scale)  # scale in [~0.8,~1.2] depending on port_scale
@@ -1468,7 +1420,6 @@ def make_decision_for_symbol(symbol: str, live: bool=False):
         if total_score <= -0.18:
             candidate = "SELL"
         final_signal = None
-        # Use absolute threshold of CURRENT_THRESHOLD (validated) to require stronger signal
         if candidate is not None and abs(total_score) >= CURRENT_THRESHOLD:
             final_signal = candidate
         decision = {"symbol": symbol, "agg": total_score, "tech": tech_score, "model_score": model_score, "fund_score": fundamental_score, "final": final_signal, "port_scale": port_scale, "paused": False}
@@ -1491,8 +1442,6 @@ def make_decision_for_symbol(symbol: str, live: bool=False):
             if os.path.exists(KILL_SWITCH_FILE):
                 logger.info("Kill switch engaged - skipping order for %s", symbol)
                 return decision
-            # re-validate thresholds just before checking daily cap / placing trade
-            validate_and_clamp_thresholds()
             if live and get_today_trade_count() >= MAX_DAILY_TRADES:
                 logger.info("Daily trade cap reached - skipping")
                 return decision
@@ -1505,16 +1454,22 @@ def make_decision_for_symbol(symbol: str, live: bool=False):
                 try:
                     status = res.get("status", "unknown")
                     if status == "sent":
-                        emoji = "✅"; status_text = "EXECUTED"
+                        emoji = "✅"
+                        status_text = "EXECUTED"
                     elif status == "rejected":
-                        emoji = "❌"; status_text = "REJECTED"
+                        emoji = "❌"
+                        status_text = "REJECTED"
                     elif status == "autotrading_disabled":
-                        emoji = "⚠️"; status_text = "AUTO TRADING DISABLED"
+                        emoji = "⚠️"
+                        status_text = "AUTO TRADING DISABLED"
                     else:
-                        emoji = "⚠️"; status_text = str(status).upper()
+                        emoji = "⚠️"
+                        status_text = str(status).upper()
                     # format numeric display: round to sensible decimals
                     try:
-                        entry_s = f"{float(entry):.2f}"; sl_s = f"{float(sl):.2f}"; tp_s = f"{float(tp):.2f}"
+                        entry_s = f"{float(entry):.2f}"
+                        sl_s = f"{float(sl):.2f}"
+                        tp_s = f"{float(tp):.2f}"
                     except Exception:
                         entry_s = str(entry); sl_s = str(sl); tp_s = str(tp)
                     msg = (
@@ -1534,20 +1489,6 @@ def make_decision_for_symbol(symbol: str, live: bool=False):
             decision.update({"entry": entry, "sl": sl, "tp": tp, "lots": lots, "placed": res})
         else:
             logger.info("No confident signal for %s (agg=%.3f)", symbol, total_score)
-        # Debug snapshot (non-intrusive)
-        try:
-            logger.info(
-                "DEBUG_EXEC -> sym=%s agg=%.5f candidate=%s final_signal=%s CURRENT_THRESHOLD=%.5f port_scale=%.3f paused=%s",
-                symbol,
-                float(total_score),
-                str(candidate),
-                str(final_signal),
-                float(CURRENT_THRESHOLD),
-                float(port_scale),
-                decision.get("paused", False) if isinstance(decision, dict) else False
-            )
-        except Exception:
-            logger.exception("DEBUG_EXEC snapshot failed for %s", symbol)
         return decision
     except Exception:
         logger.exception("make_decision_for_symbol failed for %s", symbol)
@@ -1583,12 +1524,10 @@ def adapt_and_optimize():
                 max(MIN_THRESHOLD,
                     min(MAX_THRESHOLD, CURRENT_THRESHOLD + adj))
             )
-            # ensure thresholds are still valid after change
-            validate_and_clamp_thresholds()
 
             logger.info(
-                "Threshold adapted -> winrate=%.3f, adj=%.5f, new_threshold=%.5f",
-                winrate, adj, CURRENT_THRESHOLD
+                f"Threshold adapted -> winrate={winrate:.3f}, "
+                f"adj={adj:.5f}, new_threshold={CURRENT_THRESHOLD:.5f}"
             )
 
         vols = []
@@ -1666,15 +1605,35 @@ def run_backtest():
     logger.info("Backtest complete")
 
 def confirm_enable_live():
-    # This function ensures typing the phrase enables live trading
-    if os.getenv("CONFIRM_AUTO", "") == "I UNDERSTAND_THE RISKS":
+    """
+    Robust confirmation that enables live trading.
+    Accepts:
+      - CONFIRM_AUTO env var set to "I UNDERSTAND THE RISKS" (case/underscore tolerant)
+      - interactive user typing "I UNDERSTAND THE RISKS" (case/underscore tolerant)
+    """
+    # first check env var (normalized)
+    if _normalize_confirm_text(os.getenv("CONFIRM_AUTO", "")) == "I UNDERSTAND THE RISKS":
         return True
-    got = input("To enable LIVE trading type exactly: I UNDERSTAND THE RISKS\nType now: ").strip()
-    # mirror the env check too so external invocation works
-    if got == "I UNDERSTAND_THE RISKS":
-        os.environ["CONFIRM_AUTO"] = "I UNDERSTAND_THE_RISKS"
-        return True
-    return False
+
+    # If non-interactive (no tty), advise setting env and return False
+    try:
+        if not sys.stdin or not sys.stdin.isatty():
+            logger.info("Interactive input not available. To enable LIVE, set CONFIRM_AUTO='I UNDERSTAND THE RISKS' in environment.")
+            return False
+    except Exception:
+        pass
+
+    # prompt user
+    try:
+        got = input("To enable LIVE trading type exactly: I UNDERSTAND THE RISKS\nType now: ").strip()
+        if _normalize_confirm_text(got) == "I UNDERSTAND THE RISKS":
+            # persist for this process (helps subsequent checks)
+            os.environ["CONFIRM_AUTO"] = "I UNDERSTAND THE RISKS"
+            return True
+        return False
+    except Exception:
+        logger.exception("confirm_enable_live input failed")
+        return False
 
 def setup_and_run(args):
     init_trade_db()
@@ -1701,29 +1660,6 @@ def setup_and_run(args):
     else:
         run_cycle(live=not DEMO_SIMULATION)
 
-# ---------------- --- Telegram helper (ADDED) ----------------
-def send_telegram_message(text: str) -> bool:
-    """ Safe, minimal Telegram notifier used when live trades occur. Returns True if send succeeded, False otherwise. """
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        logger.debug("send_telegram_message: Telegram not configured (missing token or chat id)")
-        return False
-    if not FUNDAMENTAL_AVAILABLE:
-        # requests not available
-        logger.debug("send_telegram_message: requests library not available")
-        return False
-    try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
-        resp = requests.post(url, data=payload, timeout=8)
-        if resp.status_code == 200:
-            return True
-        else:
-            logger.warning("send_telegram_message: non-200 %s %s", resp.status_code, resp.text[:200])
-            return False
-    except Exception:
-        logger.exception("send_telegram_message failed")
-        return False
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--loop", action="store_true")
@@ -1733,6 +1669,4 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.symbols:
         SYMBOLS = args.symbols
-    # ensure thresholds are validated at startup in case env changed after module load
-    validate_and_clamp_thresholds()
     setup_and_run(args)
