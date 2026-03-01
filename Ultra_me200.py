@@ -105,9 +105,9 @@ ADAPT_STATE_FILE = "adapt_state.json"
 TRADES_DB = "trades.db"
 TRADES_CSV = "trades.csv"
 MODEL_FILE = "ultra_instinct_model.joblib"
-CURRENT_THRESHOLD = float(os.getenv("CURRENT_THRESHOLD", "0.08"))
-MIN_THRESHOLD = 0.06
-MAX_THRESHOLD = 0.35
+CURRENT_THRESHOLD = float(os.getenv("CURRENT_THRESHOLD", "0.13"))
+MIN_THRESHOLD = 0.12
+MAX_THRESHOLD = 0.30
 DECISION_SLEEP = int(os.getenv("DECISION_SLEEP", "60"))
 ADAPT_EVERY_CYCLES = 6
 MODEL_MIN_TRAIN = 40
@@ -1496,12 +1496,12 @@ def make_decision_for_symbol(symbol: str, live: bool=False):
             pass
 
         candidate = None
-        if total_score >= 0.08:
+        if total_score >= 0.18:
             candidate = "BUY"
-        if total_score <= -0.08:
+        if total_score <= -0.18:
             candidate = "SELL"
         final_signal = None
-        if candidate is not None and abs(total_score) >= 0.06:
+        if candidate is not None and abs(total_score) >= 0.13:
             final_signal = candidate
         decision = {"symbol": symbol, "agg": total_score, "tech": tech_score, "model_score": model_score, "fund_score": fundamental_score, "final": final_signal, "port_scale": port_scale, "paused": False}
 
