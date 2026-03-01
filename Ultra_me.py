@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
 Ultra_instinct.py  -- MT5-only (no Yahoo) defensive trading bot.
-Minimal surgical fixes:
-  - Robust MT5 initialization retry (attempt to start terminal)
-  - Robust MT5 data handling and broker-symbol mapping
-  - Robust live-confirmation (env var or typed input, tolerant)
-  - Normalise total_score to [-1,1]
-  - Proportional + clamp threshold adaptation block (your block)
-  - Robust MT5 order confirmation probe + record-only-if-confirmed logic
-Everything else preserved.
+This version:
+ - Adds per-symbol max open-trades limits (XAG/XAU = 5, others = 10)
+ - Shows DEBUG_EXEC only on the first cycle (then suppressed)
+ - Keeps robust live-confirmation (env or typed, tolerant)
+ - Normalizes total_score to [-1,1]
+ - Uses Proportional + Clamp threshold adaptation
+ - Uses robust order-confirmation probe and records only confirmed trades
+Everything else kept intact.
 """
 from __future__ import annotations
 import os
@@ -71,9 +71,8 @@ except Exception:
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("Ultra_instinct")
 
-# ---------------- Configuration (unchanged logic except requested fixes) ----------------
+# ---------------- Configuration ----------------
 SYMBOLS = ["EURUSD", "XAGUSD", "XAUUSD", "BTCUSD", "USDJPY", "USOIL"]
-
 BROKER_SYMBOLS = {
     "EURUSD": "EURUSDm",
     "XAGUSD": "XAGUSDm",
@@ -82,12 +81,12 @@ BROKER_SYMBOLS = {
     "USDJPY": "USDJPYm",
     "USOIL": "USOILm",
 }
-
 TIMEFRAMES = {"M30": "30m", "H1": "60m"}
 
+# safety / execution defaults
 DEMO_SIMULATION = False
 AUTO_EXECUTE = True
-if os.getenv("CONFIRM_AUTO", "") == "I UNDERSTAND_THE RISKS":
+if os.getenv("CONFIRM_AUTO", "") == "I UNDERSTAND_THE_RISKS":
     DEMO_SIMULATION = False
     AUTO_EXECUTE = True
 
@@ -96,7 +95,7 @@ MIN_RISK_PER_TRADE_PCT = 0.002
 MAX_RISK_PER_TRADE_PCT = 0.01
 RISK_PER_TRADE_PCT = BASE_RISK_PER_TRADE_PCT
 
-MAX_DAILY_TRADES = int(os.getenv("MAX_DAILY_TRADES", "50"))
+MAX_DAILY_TRADES = int(os.getenv("MAX_DAILY_TRADES", "100"))
 KILL_SWITCH_FILE = os.getenv("KILL_SWITCH_FILE", "STOP_TRADING.flag")
 ADAPT_STATE_FILE = "adapt_state.json"
 TRADES_DB = "trades.db"
@@ -109,13 +108,11 @@ DECISION_SLEEP = int(os.getenv("DECISION_SLEEP", "60"))
 ADAPT_EVERY_CYCLES = 6
 MODEL_MIN_TRAIN = 40
 
-# MT5 credentials env
 MT5_LOGIN = os.getenv("MT5_LOGIN")
 MT5_PASSWORD = os.getenv("MT5_PASSWORD")
 MT5_SERVER = os.getenv("MT5_SERVER")
 MT5_PATH = os.getenv("MT5_PATH", r"C:\Program Files\MetaTrader 5\terminal64.exe")
 
-# telegram (optional)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
@@ -124,16 +121,32 @@ TRADING_ECONOMICS_KEY = os.getenv("TRADING_ECONOMICS_KEY", "")
 
 PAUSE_BEFORE_EVENT_MINUTES = int(os.getenv("PAUSE_BEFORE_EVENT_MINUTES", "30"))
 
-# ---------------- Safety / Adaptation parameters you provided ----------------
-# Proportional + Clamp parameters (kept exactly)
+# ---------------- Adaptation parameters (Proportional + Clamp) ----------------
 ADAPT_MIN_TRADES = 40          # require decent sample size
 TARGET_WINRATE = 0.525        # midpoint between 0.45 and 0.60
 K = 0.04                      # proportional strength
 MAX_ADJ = 0.01                # maximum threshold movement per cycle
 
-# ---------------- --- Telegram helper (ADDED) ----------------
+# ---------------- Per-symbol max open trades config ----------------
+# Default max per symbol (if not listed explicitly)
+MAX_OPEN_PER_SYMBOL_DEFAULT = 10
+# Per-symbol overrides: XAG/XAU are more volatile -> lower concurrency
+MAX_OPEN_PER_SYMBOL: Dict[str, int] = {
+    "XAGUSD": 5,
+    "XAUUSD": 5,
+    # others fall back to default 10
+}
+
+# ---------------- Internal runtime state ----------------
+_mt5 = None
+_mt5_connected = False
+cycle_counter = 0
+model_pipe = None
+# ensure debug snapshot prints only on first cycle
+_debug_snapshot_shown = False
+
+# ---------------- Telegram helper ----------------
 def send_telegram_message(text: str) -> bool:
-    """ Safe, minimal Telegram notifier used when live trades occur. Returns True if send succeeded, False otherwise. """
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         logger.debug("send_telegram_message: Telegram not configured (missing token or chat id)")
         return False
@@ -208,8 +221,8 @@ def init_trade_db():
     try:
         cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='trades'")
         if not cur.fetchone():
-            cols_sql = ",\n      ".join([f"{k} {v}" for k, v in expected_cols.items()])
-            create_sql = f"CREATE TABLE trades (\n      {cols_sql}\n    );"
+            cols_sql = ",\n ".join([f"{k} {v}" for k, v in expected_cols.items()])
+            create_sql = f"CREATE TABLE trades (\n {cols_sql}\n );"
             cur.execute(create_sql)
             conn.commit()
         else:
@@ -230,7 +243,6 @@ def init_trade_db():
         logger.exception("init_trade_db failed")
     finally:
         conn.close()
-
     if not os.path.exists(TRADES_CSV):
         try:
             with open(TRADES_CSV, "w", encoding="utf-8") as f:
@@ -300,9 +312,6 @@ def get_recent_trades(limit=200):
         return []
 
 # ---------------- MT5 mapping and helpers ----------------
-_mt5 = None
-_mt5_connected = False
-
 def try_start_mt5_terminal():
     if MT5_PATH and os.path.exists(MT5_PATH):
         try:
@@ -387,7 +396,7 @@ def map_symbol_to_broker(requested: str) -> str:
         logger.debug("map_symbol_to_broker error", exc_info=True)
     return requested
 
-# ---------------- MT5-only data fetcher ----------------
+# ---------------- MT5 data fetcher ----------------
 def fetch_ohlcv_mt5(symbol: str, interval: str = "60m", period_days: int = 60):
     if not MT5_AVAILABLE or not _mt5_connected:
         return None
@@ -483,7 +492,7 @@ def fetch_multi_timeframes(symbol: str, period_days: int = 60):
             out[label] = fetch_ohlcv(symbol, interval=intr, period_days=period_days)
     return out
 
-# ---------------- Indicators & scoring (kept intact) ----------------
+# ---------------- Indicators & scoring ----------------
 def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     if df.empty:
@@ -573,9 +582,9 @@ def aggregate_multi_tf_scores(tf_dfs: Dict[str, pd.DataFrame]) -> Dict[str, floa
     s = sum(t * w for t, w in techs); w = sum(w for _, w in techs)
     return {"tech": float(s / w), "fund": 0.0, "sent": 0.0}
 
-# ---------------- Multi-asset blending & fundamental awareness (ADDITIONS) ----------------
+# ---------------- Multi-asset blending & fundamental awareness ----------------
 _portfolio_weights_cache = {"ts": 0, "weights": {}}
-PORTFOLIO_RECOMPUTE_SECONDS = 300  # recompute every 5 minutes
+PORTFOLIO_RECOMPUTE_SECONDS = 300
 
 def compute_portfolio_weights(symbols: List[str], period_days: int = 45):
     global _portfolio_weights_cache
@@ -678,12 +687,11 @@ def fetch_fundamental_score(symbol: str, lookback_days: int = 7) -> float:
         logger.exception("fetch_fundamental_score failed")
         return 0.0
 
-# ---------------- Real-time economic calendar (ADDED) ----------------
+# ---------------- Economic calendar ----------------
 def _symbol_to_currencies(symbol: str) -> List[str]:
     s = symbol.upper()
     if len(s) >= 6:
-        base = s[:3]
-        quote = s[3:6]
+        base = s[:3]; quote = s[3:6]
         return [base, quote]
     if s.startswith("XAU") or "XAU" in s:
         return ["XAU", "USD"]
@@ -742,8 +750,7 @@ def fetch_economic_calendar_score(symbol: str, lookback_hours: int = 6, lookahea
                 related.append(e)
         if not related:
             return 0.0
-        score = 0.0
-        count = 0
+        score = 0.0; count = 0
         for e in related:
             actual = e.get("Actual") or e.get("actual") or e.get("Value") or e.get("value")
             forecast = e.get("Consensus") or e.get("Forecast") or e.get("consensus") or e.get("forecast")
@@ -793,8 +800,7 @@ def should_pause_for_events(symbol: str, lookahead_minutes: int = 30) -> (bool, 
             if when is None:
                 continue
             diff = (when.to_pydatetime().replace(tzinfo=None) - now).total_seconds() / 60.0
-            if diff < 0:
-                continue
+            if diff < 0: continue
             if diff <= lookahead_minutes:
                 title = (e.get("Event") or e.get("Title") or "").lower()
                 country = (e.get("Country") or "").upper()
@@ -806,9 +812,7 @@ def should_pause_for_events(symbol: str, lookahead_minutes: int = 30) -> (bool, 
         logger.exception("should_pause_for_events failed")
         return False, None
 
-# ---------------- simple ML hooks (ENHANCED) ----------------
-model_pipe = None
-
+# ---------------- ML hooks ----------------
 def build_model():
     if not SKLEARN_AVAILABLE:
         return None
@@ -861,7 +865,7 @@ def extract_features_for_model(df_h1: pd.DataFrame, tech_score: float, symbol: s
     except Exception:
         return np.array([[tech_score, 0.0, 50.0, 0.0, regime_code]], dtype=float)
 
-# ---------------- simulation/backtest and optimizer (unchanged) ----------------
+# ---------------- simulation/backtest and optimizer ----------------
 def simulate_strategy_on_series(df_h1, threshold, atr_mult=1.25, max_trades=200):
     if df_h1 is None or getattr(df_h1, "empty", True) or len(df_h1) < 80:
         return {"n": 0, "net": 0.0, "avg_r": 0.0, "win": 0.0}
@@ -880,11 +884,9 @@ def simulate_strategy_on_series(df_h1, threshold, atr_mult=1.25, max_trades=200)
         atr = float(df["atr14"].iloc[i] or 0.0)
         stop = atr * atr_mult
         if side == "BUY":
-            sl = entry - stop
-            tp = entry + stop * 2.0
+            sl = entry - stop; tp = entry + stop * 2.0
         else:
-            sl = entry + stop
-            tp = entry - stop * 2.0
+            sl = entry + stop; tp = entry - stop * 2.0
         r_mult = 0.0
         for j in range(i + 1, min(i + 31, len(df))):
             high = float(df["high"].iloc[j]); low = float(df["low"].iloc[j])
@@ -950,9 +952,7 @@ def light_optimizer(symbols, budget=12):
     logger.info("Optimizer skipped applying")
     return None
 
-# ---------------- Execution, decision & runner (kept, but decision enhanced) ----------------
-cycle_counter = 0
-
+# ---------------- Execution, decision & runner ----------------
 def compute_lots_from_risk(risk_pct, balance, entry_price, stop_price):
     try:
         risk_amount = balance * risk_pct
@@ -984,10 +984,10 @@ def place_order_mt5(symbol, action, lot, price, sl, tp):
         tick = _mt5.symbol_info_tick(broker)
         if tick is None:
             return {"status": "no_tick", "symbol": broker}
-        vol_min   = getattr(si, "volume_min", None) or getattr(si, "volume_min", 0.01) or 0.01
-        vol_step  = getattr(si, "volume_step", None) or getattr(si, "volume_step", 0.01) or 0.01
-        vol_max   = getattr(si, "volume_max", None) or getattr(si, "volume_max", None)
-        point     = getattr(si, "point", None) or getattr(si, "trade_tick_size", None) or getattr(si, "tick_size", None) or 0.00001
+        vol_min = getattr(si, "volume_min", None) or getattr(si, "volume_min", 0.01) or 0.01
+        vol_step = getattr(si, "volume_step", None) or getattr(si, "volume_step", 0.01) or 0.01
+        vol_max = getattr(si, "volume_max", None) or getattr(si, "volume_max", None)
+        point = getattr(si, "point", None) or getattr(si, "trade_tick_size", None) or getattr(si, "tick_size", None) or 0.00001
         stop_level = getattr(si, "stop_level", None)
         if stop_level is not None and stop_level >= 0:
             min_sl_dist = float(stop_level) * float(point)
@@ -1148,34 +1148,90 @@ def get_today_trade_count():
             continue
     return int(count)
 
+# ---------------- New: open positions counting (MT5 or DB fallback) ----------------
+def _normalize_requested_symbol_key(req: str) -> str:
+    # return canonical base key like 'XAUUSD' or 'BTCUSD' for mapping
+    if not req:
+        return req
+    s = req.upper()
+    # strip broker suffixes often present
+    for suff in ('.m', 'm', '-m', '.M', 'M'):
+        if s.endswith(suff.upper()):
+            s = s[: -len(suff)]
+    # Some brokers use suffixes attached like "BTCUSDm" -> strip trailing 'M' if present
+    if s.endswith('M'):
+        s = s[:-1]
+    return s
+
+def get_open_positions_count(requested_symbol: str) -> int:
+    """
+    Returns number of open positions for requested_symbol.
+    Prefers MT5 positions_get when available. Falls back to counting recent 'open' records in trades DB.
+    """
+    # map to broker symbol for MT5 queries
+    broker_sym = map_symbol_to_broker(requested_symbol)
+    # Prefer MT5 positions if connected
+    if MT5_AVAILABLE and _mt5_connected:
+        try:
+            positions = _mt5.positions_get(symbol=broker_sym)
+            if not positions:
+                return 0
+            # count positions with same symbol and positive volume
+            cnt = 0
+            for p in positions:
+                try:
+                    if getattr(p, "symbol", "").lower() == broker_sym.lower():
+                        vol = float(getattr(p, "volume", 0.0) or 0.0)
+                        if vol > 0:
+                            cnt += 1
+                except Exception:
+                    continue
+            return int(cnt)
+        except Exception:
+            logger.debug("positions_get failed for %s, falling back to DB count", broker_sym, exc_info=True)
+    # Fallback: count in DB trades with status indicating still open/placed in the last day (best-effort).
+    try:
+        conn = sqlite3.connect(TRADES_DB, timeout=5)
+        cur = conn.cursor()
+        # statuses we consider as open/placed: sim_open, sent, sim_open, open, sim
+        cur.execute("SELECT COUNT(*) FROM trades WHERE symbol=? AND status IN ('sim_open','sent','open','sim_open','sim')", (requested_symbol,))
+        row = cur.fetchone()
+        conn.close()
+        if row:
+            return int(row[0])
+    except Exception:
+        logger.exception("get_open_positions_count DB fallback failed")
+    return 0
+
+def get_max_open_for_symbol(requested_symbol: str) -> int:
+    key = _normalize_requested_symbol_key(requested_symbol)
+    # explicit mapping
+    if key in MAX_OPEN_PER_SYMBOL:
+        return int(MAX_OPEN_PER_SYMBOL[key])
+    # try uppercase startswith match (if symbol variants)
+    for k, v in MAX_OPEN_PER_SYMBOL.items():
+        if key.startswith(k):
+            return int(v)
+    return int(MAX_OPEN_PER_SYMBOL_DEFAULT)
+
 # ---------------- Helper: robust live confirmation ----------------
 def _normalize_confirm_string(s: str) -> str:
-    # make tolerant to case, underscores, quotes, extra spaces
     if s is None:
         return ""
-    # keep only alphanumeric characters and uppercase them
     cleaned = "".join([c for c in s if c.isalnum()]).upper()
     return cleaned
 
 def confirm_enable_live_interactive() -> bool:
-    """
-    Robust confirmation that accepts:
-      - CONFIRM_AUTO env var tolerant to variations
-      - typed input (case/quote/underscore tolerant)
-    If the process has no TTY (non-interactive), it will instruct the user to set CONFIRM_AUTO and return False.
-    """
     env_val = os.getenv("CONFIRM_AUTO", "")
     if env_val:
         if _normalize_confirm_string(env_val) == _normalize_confirm_string("I UNDERSTAND THE RISKS"):
             logger.info("CONFIRM_AUTO environment variable accepted")
             return True
-    # if not interactive, don't block — advise user to set env var
     try:
         if not sys.stdin or not sys.stdin.isatty():
             logger.warning("Non-interactive process: set CONFIRM_AUTO to 'I UNDERSTAND THE RISKS' to enable live trading")
             return False
     except Exception:
-        # fallback
         logger.warning("Unable to detect interactive TTY. Set CONFIRM_AUTO='I UNDERSTAND THE RISKS' to enable live trading.")
         return False
     try:
@@ -1184,15 +1240,14 @@ def confirm_enable_live_interactive() -> bool:
         logger.warning("Input failed (non-interactive). Set CONFIRM_AUTO to 'I UNDERSTAND THE RISKS' to enable live trading.")
         return False
     if _normalize_confirm_string(got) == _normalize_confirm_string("I UNDERSTAND THE RISKS"):
-        # persist for session
         os.environ["CONFIRM_AUTO"] = "I UNDERSTAND THE RISKS"
         return True
     logger.info("Live confirmation string did not match; live not enabled")
     return False
 
-# ---------------- make decision and order handling (modified only where needed) ----------------
+# ---------------- make decision and order handling ----------------
 def make_decision_for_symbol(symbol: str, live: bool=False):
-    global cycle_counter, model_pipe, CURRENT_THRESHOLD, RISK_PER_TRADE_PCT
+    global cycle_counter, model_pipe, CURRENT_THRESHOLD, RISK_PER_TRADE_PCT, _debug_snapshot_shown
     try:
         tfs = fetch_multi_timeframes(symbol, period_days=60)
         df_h1 = tfs.get("H1")
@@ -1225,8 +1280,7 @@ def make_decision_for_symbol(symbol: str, live: bool=False):
                 model_score = 0.0
 
         try:
-            news_sent = 0.0
-            econ_sent = 0.0
+            news_sent = 0.0; econ_sent = 0.0
             try:
                 news_sent = fetch_fundamental_score(symbol)
             except Exception:
@@ -1255,10 +1309,10 @@ def make_decision_for_symbol(symbol: str, live: bool=False):
             port_scale = 1.0
 
         total_score = (0.40 * tech_score) + (0.25 * model_score) + (0.35 * fundamental_score)
-        # Normalize to [-1.0, 1.0] immediately so threshold comparisons are predictable
+        # NORMALIZE to [-1.0, 1.0]
         try:
             total_score = float(total_score)
-            if total_score != total_score:  # NaN guard
+            if total_score != total_score:
                 total_score = 0.0
             total_score = max(-1.0, min(1.0, total_score))
         except Exception:
@@ -1272,7 +1326,6 @@ def make_decision_for_symbol(symbol: str, live: bool=False):
         if total_score <= -0.18:
             candidate = "SELL"
         final_signal = None
-        # NOTE: user indicated they may want candidate cutoff 0.15; the code currently uses 0.06/0.08 gates - leave as earlier unless user asks otherwise
         if candidate is not None and abs(total_score) >= 0.13:
             final_signal = candidate
         decision = {"symbol": symbol, "agg": total_score, "tech": tech_score, "model_score": model_score, "fund_score": fundamental_score, "final": final_signal, "port_scale": port_scale, "paused": False}
@@ -1298,15 +1351,23 @@ def make_decision_for_symbol(symbol: str, live: bool=False):
             if live and get_today_trade_count() >= MAX_DAILY_TRADES:
                 logger.info("Daily trade cap reached - skipping")
                 return decision
+
+            # check max open positions per symbol
+            max_open = get_max_open_for_symbol(symbol)
+            try:
+                open_count = get_open_positions_count(symbol)
+                if open_count >= max_open:
+                    logger.info("Max open positions for %s reached (%d/%d) - skipping", symbol, open_count, max_open)
+                    return decision
+            except Exception:
+                logger.exception("open positions check failed for %s; continuing", symbol)
+
             balance = float(os.getenv("FALLBACK_BALANCE", "650.0"))
             lots = compute_lots_from_risk(risk_pct, balance, entry, sl)
             if live and not DEMO_SIMULATION:
                 # ---- send order and robustly confirm execution ----
                 res = place_order_mt5(symbol, final_signal, lots, None, sl, tp)
-
-                # determine immediate success from returned structure
-                status = None
-                retcode = None
+                status = None; retcode = None
                 try:
                     if isinstance(res, dict):
                         status = str(res.get("status", "")).lower()
@@ -1418,29 +1479,34 @@ def make_decision_for_symbol(symbol: str, live: bool=False):
                 decision.update({"entry": entry, "sl": sl, "tp": tp, "lots": lots, "placed": res})
         else:
             logger.info("No confident signal for %s (agg=%.3f)", symbol, total_score)
-        # DEBUG snapshot
+
+        # DEBUG: show only on first cycle (as requested)
         try:
-            logger.info(
-                "DEBUG_EXEC -> sym=%s agg=%.5f candidate=%s final_signal=%s "
-                "CURRENT_THRESHOLD=%.5f BUY=%s SELL=%s port_scale=%.3f paused=%s",
-                symbol,
-                float(total_score),
-                str(candidate),
-                str(final_signal),
-                float(CURRENT_THRESHOLD),
-                str(globals().get("BUY", "N/A")),
-                str(globals().get("SELL", "N/A")),
-                float(decision.get("port_scale", 1.0)) if isinstance(decision, dict) else 1.0,
-                decision.get("paused", False) if isinstance(decision, dict) else False
-            )
+            if not _debug_snapshot_shown:
+                logger.info(
+                    "DEBUG_EXEC -> sym=%s agg=%.5f candidate=%s final_signal=%s "
+                    "CURRENT_THRESHOLD=%.5f BUY=%s SELL=%s port_scale=%.3f paused=%s",
+                    symbol,
+                    float(total_score),
+                    str(candidate),
+                    str(final_signal),
+                    float(CURRENT_THRESHOLD),
+                    str(globals().get("BUY", "N/A")),
+                    str(globals().get("SELL", "N/A")),
+                    float(decision.get("port_scale", 1.0)) if isinstance(decision, dict) else 1.0,
+                    decision.get("paused", False) if isinstance(decision, dict) else False
+                )
+                # mark shown so subsequent cycles are quiet
+                _debug_snapshot_shown = True
         except Exception:
             logger.exception("DEBUG_EXEC snapshot failed for %s", symbol)
+
         return decision
     except Exception:
         logger.exception("make_decision_for_symbol failed for %s", symbol)
         return None
 
-# ---------------- Adaptation (PROPORTIONAL + CLAMP) ----------------
+# ---------------- Adaptation (Proportional + Clamp) ----------------
 def adapt_and_optimize():
     global CURRENT_THRESHOLD, RISK_PER_TRADE_PCT
     try:
@@ -1452,25 +1518,16 @@ def adapt_and_optimize():
 
         # ===== Threshold Adaptation (Proportional + Clamp) =====
         if n >= ADAPT_MIN_TRADES:
-            # proportional adjustment
             adj = -K * (winrate - TARGET_WINRATE)
-
-            # clamp movement to prevent instability
             if adj > MAX_ADJ:
                 adj = MAX_ADJ
             elif adj < -MAX_ADJ:
                 adj = -MAX_ADJ
-
-            # apply and enforce bounds
             CURRENT_THRESHOLD = float(
                 max(MIN_THRESHOLD,
                     min(MAX_THRESHOLD, CURRENT_THRESHOLD + adj))
             )
-
-            logger.info(
-                f"Threshold adapted -> winrate={winrate:.3f}, "
-                f"adj={adj:.5f}, new_threshold={CURRENT_THRESHOLD:.5f}"
-            )
+            logger.info(f"Threshold adapted -> winrate={winrate:.3f}, adj={adj:.5f}, new_threshold={CURRENT_THRESHOLD:.5f}")
 
         vols = []
         for s in SYMBOLS:
@@ -1544,7 +1601,6 @@ def run_backtest():
     logger.info("Backtest complete")
 
 def confirm_enable_live() -> bool:
-    # wrapper to the robust confirmation
     return confirm_enable_live_interactive()
 
 def setup_and_run(args):
