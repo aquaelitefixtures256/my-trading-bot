@@ -728,7 +728,7 @@ def fetch_newsdata(q: str, pagesize: int = 20) -> Dict[str, Any]:
     # use a small cache window to avoid rate limit
     now_ts = time.time()
     cache_key = f"newsdata:{q}:{pagesize}"
-    cached = _news_cache["data"].get(cache_key")
+    cached = _news_cache["data"].get(cache_key)
     if cached and now_ts - _news_cache["ts"] < 25:
         return cached
     try:
