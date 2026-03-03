@@ -1308,26 +1308,40 @@ def make_decision_for_symbol(symbol: str, live: bool=False):
         except Exception:
             port_scale = 1.0
 
-        total_score = (0.40 * tech_score) + (0.25 * model_score) + (0.35 * fundamental_score)
-        # NORMALIZE to [-1.0, 1.0]
-        try:
-            total_score = float(total_score)
-            if total_score != total_score:
-                total_score = 0.0
-            total_score = max(-1.0, min(1.0, total_score))
-        except Exception:
-            total_score = max(-1.0, min(1.0, float(total_score if total_score is not None else 0.0)))
+        # --- normalize inputs from the scores dict and clamp each to [-1, 1]
+tech_score = float(scores.get("tech", 0.0) or 0.0)
+model_score = float(scores.get("model", 0.0) or 0.0)
+fundamental_score = float(scores.get("fund", 0.0) or 0.0)
 
-        total_score = total_score * (0.5 + 0.5 * port_scale)
+tech_score = max(-1.0, min(1.0, tech_score))
+model_score = max(-1.0, min(1.0, model_score))
+fundamental_score = max(-1.0, min(1.0, fundamental_score))
 
-        candidate = None
-        if total_score >= 0.18:
-            candidate = "BUY"
-        if total_score <= -0.18:
-            candidate = "SELL"
-        final_signal = None
-        if candidate is not None and abs(total_score) >= 0.13:
-            final_signal = candidate
+# --- recommended weights
+W_TECH, W_MODEL, W_FUND = 0.70, 0.20, 0.10
+
+# --- weighted total score
+total_score = (W_TECH * tech_score) + (W_MODEL * model_score) + (W_FUND * fundamental_score)
+
+# --- optional port_scale adjustment
+# total_score = total_score * (0.5 + 0.5 * port_scale)  # uncomment if you still use port_scale
+
+# --- guard against NaN
+if total_score != total_score:
+    total_score = 0.0
+total_score = max(-1.0, min(1.0, float(total_score)))
+
+# --- threshold and candidate logic
+CURRENT_THRESHOLD = float(globals().get("CURRENT_THRESHOLD", 0.18))
+candidate = None
+if total_score >= 0.18:
+    candidate = "BUY"
+elif total_score <= -0.18:
+    candidate = "SELL"
+
+final_signal = None
+if candidate is not None and abs(total_score) >=0.13:
+    final_signal = candidate
         decision = {"symbol": symbol, "agg": total_score, "tech": tech_score, "model_score": model_score, "fund_score": fundamental_score, "final": final_signal, "port_scale": port_scale, "paused": False}
 
         if final_signal:
