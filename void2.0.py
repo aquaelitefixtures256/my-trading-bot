@@ -1351,7 +1351,7 @@ def place_order_mt5(symbol, action, lot, price, sl, tp):
             "tp": float(tp) if tp is not None else 0.0,
             "deviation": 20,
             "magic": 123456,
-            "comment": "Ultra_instinct",
+            "comment": "void2.0",
             "type_time": _mt5.ORDER_TIME_GTC,
             "type_filling": _mt5.ORDER_FILLING_IOC,
         }
