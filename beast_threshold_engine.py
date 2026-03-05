@@ -8,12 +8,12 @@ from datetime import datetime
 # ==========================================================
 
 SYMBOLS = [
-    "XAUUSD",
-    "XAGUSD",
-    "BTCUSD",
-    "USDJPY",
-    "USOIL",
-    "EURUSD"
+    "XAUUSDm",
+    "XAGUSDm",
+    "BTCUSDm",
+    "USDJPYm",
+    "USOILm",
+    "EURUSDm"
 ]
 
 TIMEFRAME = mt5.TIMEFRAME_M30
