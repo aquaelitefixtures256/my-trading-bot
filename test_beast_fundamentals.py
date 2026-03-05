@@ -1,68 +1,34 @@
-import importlib
+import importlib.util
 import datetime
+import os
 
 print("=== VOID BEAST FUNDAMENTALS TEST ===")
-print("Time:", datetime.datetime.utcnow())
+print("Time:", datetime.datetime.now())
 print()
 
-# load the bot
-bot = importlib.import_module("voidx2.0")
+# path to the bot file
+bot_path = os.path.join(os.getcwd(), "voidx2.0.py")
 
-print("Bot module loaded:", bot.__name__)
+# load module from file path
+spec = importlib.util.spec_from_file_location("void_beast", bot_path)
+bot = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(bot)
+
+print("Bot module loaded successfully.")
 print()
 
-# -----------------------------------
-# TEST NEWS MODULE
-# -----------------------------------
+# test symbols
+symbols = ["EURUSD", "USOIL", "USDJPY", "XAUUSD"]
 
-print("---- Testing News Fetch ----")
-
-try:
-    news = bot.fetch_newsdata("gold OR oil OR usd")
-    print("Articles found:", news.get("count"))
-
-    for i, a in enumerate(news.get("articles", [])[:5], 1):
-        print(f"{i}.", a.get("title"))
-
-except Exception as e:
-    print("News test error:", e)
-
-print()
-
-# -----------------------------------
-# TEST ECONOMIC CALENDAR
-# -----------------------------------
-
-print("---- Testing Calendar ----")
-
-try:
-    events = bot.fetch_economic_calendar()
-
-    if events:
-        print("Calendar events:", len(events))
-        print("Sample event:", events[0])
-    else:
-        print("No events returned")
-
-except Exception as e:
-    print("Calendar test error:", e)
-
-print()
-
-# -----------------------------------
-# TEST FUNDAMENTAL SCORE
-# -----------------------------------
-
-print("---- Testing Fundamental Score ----")
-
-symbols = ["EURUSD","XAUUSD","XAGUSD","BTCUSD"]
-
-for s in symbols:
+for symbol in symbols:
     try:
-        score = bot.fetch_fundamental_score(s)
-        print(s, "score =", score)
+        if hasattr(bot, "get_fundamental_score"):
+            score = bot.get_fundamental_score(symbol)
+            print(f"{symbol} fundamental score:", score)
+        else:
+            print(f"{symbol}: get_fundamental_score() not found in bot.")
     except Exception as e:
-        print(s, "error:", e)
+        print(f"{symbol} error:", e)
 
 print()
 print("=== TEST COMPLETE ===")
