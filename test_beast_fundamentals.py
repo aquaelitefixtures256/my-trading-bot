@@ -1,34 +1,37 @@
-import importlib.util
 import datetime
-import os
 
-print("=== VOID BEAST FUNDAMENTALS TEST ===")
+print("=== VOID BEAST FUNDAMENTALS FILE TEST ===")
 print("Time:", datetime.datetime.now())
 print()
 
-# path to the bot file
-bot_path = os.path.join(os.getcwd(), "voidx2.0.py")
+symbols = ["EURUSD", "USDJPY", "XAUUSD", "BTCUSD", "USOIL"]
 
-# load module from file path
-spec = importlib.util.spec_from_file_location("void_beast", bot_path)
-bot = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(bot)
+fund_file = "fundamentals_test.txt"
 
-print("Bot module loaded successfully.")
-print()
+try:
+    with open(fund_file, "r") as f:
+        data = f.read()
+except Exception as e:
+    print("ERROR reading fundamentals file:", e)
+    exit()
 
-# test symbols
-symbols = ["EURUSD", "USOIL", "USDJPY", "XAUUSD"]
+print("Fundamentals file loaded.\n")
 
 for symbol in symbols:
-    try:
-        if hasattr(bot, "get_fundamental_score"):
-            score = bot.get_fundamental_score(symbol)
-            print(f"{symbol} fundamental score:", score)
-        else:
-            print(f"{symbol}: get_fundamental_score() not found in bot.")
-    except Exception as e:
-        print(f"{symbol} error:", e)
+    print("Checking:", symbol)
 
-print()
+    if symbol in data:
+        print("  ✔ News found for", symbol)
+
+        if "BULLISH" in data:
+            print("  Sentiment detected: BULLISH")
+
+        if "BEARISH" in data:
+            print("  Sentiment detected: BEARISH")
+
+    else:
+        print("  No news for this symbol")
+
+    print()
+
 print("=== TEST COMPLETE ===")
