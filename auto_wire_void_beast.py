@@ -9,7 +9,7 @@ from pathlib import Path
 import py_compile
 
 ROOT = Path.cwd()
-SRC = ROOT / "voidx2_0.py"
+SRC = ROOT / "voidx2_0_final_beast.py"
 
 if not SRC.exists():
     print("Error: voidx2_0.py not found in", ROOT)
