@@ -19,6 +19,7 @@ Main bot file remains untouched.
 import time
 import logging
 import importlib
+import subprocess
 
 # --------------------------------------------------
 # LOGGING
@@ -141,19 +142,16 @@ def run_dashboard_update():
         logger.warning(f"Dashboard update error: {e}")
 
 # --------------------------------------------------
-# TRADING ENGINE CALL
+# TRADING ENGINE CALL (UPDATED)
 # --------------------------------------------------
 
 def run_trading_engine():
     try:
-        bot = importlib.import_module("voidx2_0_final_beast_full-1")
-
-        if hasattr(bot, "run_cycle"):
-            bot.run_cycle()
-        else:
-            logger.info("Running bot main cycle")
-            bot.main()
-
+        logger.info("Starting trading engine")
+        subprocess.run(
+            ["python", "voidx2_0_final_beast_full-1.py", "--loop", "--live"],
+            check=False
+        )
     except Exception as e:
         logger.error(f"Trading engine error: {e}")
 
