@@ -142,14 +142,15 @@ def run_dashboard_update():
         logger.warning(f"Dashboard update error: {e}")
 
 # --------------------------------------------------
-# TRADING ENGINE CALL (UPDATED)
+# TRADING ENGINE CALL (UPDATED FOR VENV)
 # --------------------------------------------------
 
 def run_trading_engine():
     try:
         logger.info("Starting trading engine")
         subprocess.run(
-            ["python", "voidx2_0_final_beast_full-1.py", "--loop", "--live"],
+            [r"C:\Users\Administrator\Desktop\Muc_universe\venv_quant\Scripts\python.exe",
+             "void_beast_engine.py", "--loop", "--live"],
             check=False
         )
     except Exception as e:
