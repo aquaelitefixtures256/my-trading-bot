@@ -1,48 +1,32 @@
 #!/usr/bin/env python3
 """
-Safe rebuild of make_void_beast_upgrade.py with robust insertion point logic.
-
-This script:
- - creates a timestamped backup of voidx2_0.py
- - writes modular beast_*.py helper modules (25-system suite)
- - injects a single safe integration import block into voidx2_0_final_beast.py
-   at a position after shebang / encoding / module docstring / __future__ imports
- - performs a syntax check on the merged file
+make_void_beast_upgrade.py (robust rebuild)
+Creates the full 25-module beast suite and a safe wrapper voidx2_0_final_beast.py
+that runs the original voidx2_0.py without modifying it (avoids __future__/docstring issues).
 """
-import os, shutil, time, sys, py_compile, re
+import os, shutil, time, sys, py_compile
 from pathlib import Path
 
 ROOT = Path.cwd()
 SRC = ROOT / "voidx2_0.py"
-DST = ROOT / "voidx2_0_final_beast.py"
 BACKUP = ROOT / f"voidx2_0_backup_before_beast_{int(time.time())}.py"
+WRAPPER = ROOT / "voidx2_0_final_beast.py"
 
 if not SRC.exists():
     print("ERROR: voidx2_0.py not found in", ROOT)
     sys.exit(2)
 
-# create backup
+# 1) create a backup
 shutil.copy2(SRC, BACKUP)
 print("Backup created:", BACKUP.name)
 
-# (Modules content omitted here in message for brevity — the script writes the same modules
-#  as previously discussed: beast_helpers, beast_sentiment, beast_scoring, beast_threshold,
-#  beast_risk, beast_protection, beast_dashboard, beast_calendar, beast_symbols,
-#  beast_correlation, beast_liquidity, beast_monitor, beast_execution_fix, beast_regime,
-#  beast_nfp)
-# For clarity and to avoid errors when copying, the script below will define these module strings
-# and write them to files before merging — identical content to the previously produced suite.
-
-# ---------- define modules (same as provided before) ----------
-# NOTE: Paste the full module string definitions exactly as in the previous merge script here.
-# To keep this message clear, we will reconstruct them programmatically by reading an in-memory map.
-
+# ---------- module contents ----------
 modules = {}
 
 modules["beast_helpers.py"] = r'''
 # beast_helpers.py - shared helpers and logger
 import math, time, json, os, logging
-from datetime import datetime, timezone
+from datetime import datetime
 
 logger = logging.getLogger("void_beast")
 if not logger.handlers:
@@ -70,7 +54,6 @@ def now_ts():
 
 modules["beast_sentiment.py"] = r'''
 # beast_sentiment.py - news sentiment + smoothing (EMA)
-import math, os
 from collections import deque
 from beast_helpers import logger
 
@@ -114,9 +97,7 @@ class SentimentEngine:
 
 modules["beast_scoring.py"] = r'''
 # beast_scoring.py - Weighted combined scoring and HTF alignment helper
-from beast_helpers import logger
 import os
-
 W_TECH = float(os.getenv("BEAST_W_TECH", "0.70"))
 W_MODEL = float(os.getenv("BEAST_W_MODEL", "0.20"))
 W_FUND = float(os.getenv("BEAST_W_FUND", "0.10"))
@@ -460,49 +441,7 @@ def should_block_for_event(event_ts_iso, now=None):
     return False, ""
 '''
 
-# integration imports block (safe, non-fatal)
-beast_integration_block = r'''
-# ==== BEGIN VOID BEAST INTEGRATION IMPORTS ====
-# Auto-injected imports for VOID BEAST modules (safe: failures are logged but not fatal).
-try:
-    from beast_helpers import logger, clamp, now_ts
-    import beast_threshold as vb_threshold
-    import beast_risk as vb_risk
-    import beast_protection as vb_protect
-    import beast_dashboard as vb_dashboard
-    import beast_scoring as vb_scoring
-    import beast_calendar as vb_calendar
-    import beast_symbols as vb_symbols
-    import beast_correlation as vb_corr
-    import beast_liquidity as vb_liq
-    import beast_monitor as vb_monitor
-    import beast_execution_fix as vb_exec
-    import beast_regime as vb_regime
-    import beast_nfp as vb_nfp
-    import beast_sentiment as vb_sent
-except Exception as e:
-    import logging
-    logging.getLogger("void_beast").warning("VOID BEAST integration import failure: %s", e)
-# ==== END VOID BEAST INTEGRATION IMPORTS ====
-'''
-
-beast_upgrade_note = r'''
-# ==== VOID BEAST UPGRADE BLOCK (auto-appended) ====
-# The runtime may call modular beast_* helpers each cycle to:
-# - apply vb_threshold.apply_gravity_and_volatility(...)
-# - compute vb_scoring.combined_score(...)
-# - get smoothed sentiment from vb_sent.SentimentEngine
-# - check vb_calendar.high_impact_block(...)
-# - call vb_protect.sqf_check(...) and vb_liq.commodity_regime_check(...)
-# - compute risk via vb_risk.compute_dynamic_risk(...)
-# - publish cycle via vb_dashboard.publish_cycle(...)
-# - use vb_symbols.count_open_positions(mt5) for position limits
-# - use vb_corr.correlation_coefficient(...) for exposure checks
-# Modules are safe: if missing, the original bot runs unchanged.
-# End of auto-appended block
-'''
-
-# ---------- write module files ----------
+# ---------- write modules ----------
 for name, content in modules.items():
     p = ROOT / name
     if p.exists():
@@ -511,67 +450,68 @@ for name, content in modules.items():
         p.write_text(content, encoding="utf-8")
         print("Module written:", name)
 
-# ---------- robust insertion point detection ----------
-orig = SRC.read_text(encoding="utf-8")
-lines = orig.splitlines(keepends=True)
+# ---------- create wrapper file (safe: does not modify original) ----------
+wrapper_text = r'''
+# voidx2_0_final_beast.py - wrapper that loads beast modules then runs original voidx2_0.py
+import logging
+import runpy
+import sys
+from pathlib import Path
 
-# find insertion index:
-# 1) allow shebang on line 0
-insert_idx = 0
-if lines and lines[0].startswith("#!"):
-    insert_idx = 1
+logger = logging.getLogger("void_beast")
+if not logger.handlers:
+    h = logging.StreamHandler()
+    fmt = "%(asctime)s %(levelname)s %(message)s"
+    h.setFormatter(logging.Formatter(fmt))
+    logger.addHandler(h)
+    logger.setLevel(logging.INFO)
 
-# 2) skip encoding comment if present (e.g. -*- coding: utf-8 -*-)
-while insert_idx < len(lines) and re.match(r'\s*#.*coding[:=]\s*[-\w.]+', lines[insert_idx]):
-    insert_idx += 1
+# Try to import beast modules (non-fatal if something missing)
+_try_imports = [
+    "beast_helpers","beast_sentiment","beast_scoring","beast_threshold",
+    "beast_risk","beast_protection","beast_dashboard","beast_calendar",
+    "beast_symbols","beast_correlation","beast_liquidity","beast_monitor",
+    "beast_execution_fix","beast_regime","beast_nfp"
+]
+for m in _try_imports:
+    try:
+        __import__(m)
+        logger.info("Loaded module: %s", m)
+    except Exception as e:
+        logger.warning("Module %s failed to import: %s", m, e)
 
-# 3) skip a module-level docstring if present (triple quotes) - supports single and double quotes
-def skip_module_docstring(lines, idx):
-    if idx >= len(lines):
-        return idx
-    s = lines[idx].lstrip()
-    if s.startswith('"""') or s.startswith("'''"):
-        quote = s[:3]
-        # if closing on same line
-        if s.count(quote) >= 2:
-            return idx + 1
-        # otherwise find end
-        i = idx + 1
-        while i < len(lines):
-            if quote in lines[i]:
-                return i + 1
-            i += 1
-        return i
-    return idx
+# Execute the original bot in its own namespace
+SRC = Path(__file__).parent / "voidx2_0.py"
+if not SRC.exists():
+    logger.error("Original voidx2_0.py not found; aborting.")
+    sys.exit(2)
 
-insert_idx = skip_module_docstring(lines, insert_idx)
+# run the bot as a script (this will execute the original main loop)
+runpy.run_path(str(SRC), run_name="__main__")
+'''
 
-# 4) include any from __future__ imports (they must remain at top)
-while insert_idx < len(lines) and re.match(r'\s*from\s+__future__\s+import', lines[insert_idx]):
-    insert_idx += 1
+WRAPPER.write_text(wrapper_text, encoding="utf-8")
+print("Wrote wrapper:", WRAPPER.name)
 
-# 5) Now insert the integration block at computed insert_idx
-lines.insert(insert_idx, beast_integration_block + "\n")
-merged_text = "".join(lines)
+# ---------- syntax check all created modules + wrapper ----------
+to_check = list(modules.keys()) + [WRAPPER.name]
+errors = []
+for fname in to_check:
+    p = ROOT / fname
+    try:
+        py_compile.compile(str(p), doraise=True)
+        print("Syntax OK:", fname)
+    except py_compile.PyCompileError as e:
+        errors.append((fname, str(e)))
 
-# append upgrade note if not present
-if "VOID BEAST UPGRADE BLOCK" not in merged_text:
-    merged_text += "\n\n" + beast_upgrade_note
-
-# write final file
-DST.write_text(merged_text, encoding="utf-8")
-print("Wrote merged bot:", DST.name)
-
-# syntax check
-try:
-    py_compile.compile(str(DST), doraise=True)
-    print("Syntax check passed for", DST.name)
-except py_compile.PyCompileError as e:
-    print("Syntax error when compiling merged file:", e)
-    print("Merged file left at:", DST)
+if errors:
+    print("\nSyntax errors detected:")
+    for fn, err in errors:
+        print(" -", fn, "\n", err)
+    print("\nMerged files left in folder. Fix the listed modules and re-run.")
     sys.exit(4)
 
-print("\nSUCCESS: voidx2_0_final_beast.py created with full module suite and robust insertion.")
-print("Run tests: python -m py_compile voidx2_0_final_beast.py")
-print("Then run your earlier tests: python test_beast_live_scan.py and python test_beast_fundamentals.py")
-print("If you want me to auto-wire minimal runtime calls into the main cycle (so the bot actively uses these modules each 60s), reply 'AUTO-WIRE NOW'.")
+print("\nSUCCESS: All modules and wrapper compiled without syntax errors.")
+print("Now you can run the final beast wrapper with:")
+print("    python voidx2_0_final_beast.py")
+print("If you want me to AUTO-WIRE the modules into your bot's main loop (call the helpers each 60s), reply 'AUTO-WIRE NOW'.")
