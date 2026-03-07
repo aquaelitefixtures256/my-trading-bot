@@ -2,15 +2,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import axios from "axios";
 import { Line } from "react-chartjs-2";
-import {
-  Chart as ChartJS,
-  CategoryScale,
-  LinearScale,
-  PointElement,
-  LineElement,
-  Tooltip,
-  Legend,
-} from "chart.js";
+import { Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Legend } from "chart.js";
 import bg from "./assets/void-bg.jpg";
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Legend);
@@ -133,7 +125,6 @@ export default function App() {
       }
     } catch (e) {
       // quietly fail — server may restart
-      // console.error(e);
     }
   }
 
@@ -375,4 +366,4 @@ function LoginForm({ onLogin, busy }) {
       </button>
     </div>
   );
-        }
+      }
