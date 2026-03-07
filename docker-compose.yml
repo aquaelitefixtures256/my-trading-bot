@@ -1,0 +1,15 @@
+version: '3.8'
+services:
+  dashboard:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - DASHBOARD_KEY=${DASHBOARD_KEY}
+      - JWT_SECRET=${JWT_SECRET}
+      - ADMIN_USER=${ADMIN_USER}
+      - ADMIN_PASS=${ADMIN_PASS}
+      - BOT_CMD=${BOT_CMD}
+      - BOT_WORKDIR=${BOT_WORKDIR}
+    volumes:
+      - ./:/app
