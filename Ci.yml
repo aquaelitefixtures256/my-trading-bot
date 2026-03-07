@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        run: docker build -t void-beast-dashboard:ci .
+
+      - name: Run container
+        run: |
+          docker run -d --name vbci -p 8001:8000 -e DASHBOARD_KEY=ci_test -e JWT_SECRET=ci_secret -e ADMIN_USER=ci -e ADMIN_PASS=ci -e BOT_CMD="sleep 999" void-beast-dashboard:ci
+          sleep 2
+          curl -sSf http://localhost:8001/status | jq .
+      - name: Cleanup
+        run: docker rm -f vbci || true
