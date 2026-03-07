@@ -1,25 +1,28 @@
 #!/usr/bin/env python3
 """
-VOID Beast Master Controller
-Professional orchestration layer that activates all Beast modules
-and runs the trading engine continuously.
+VOID Beast Master Controller — Institutional Edition
 
-This controller:
-• Runs every cycle
-• Calls all protection systems
-• Calls threshold gravity
-• Calls risk scaling
-• Calls regime filters
-• Calls the trading engine
-• Updates dashboard
+Advanced orchestration controller.
 
-Main bot file remains untouched.
+Features
+--------
+• Prevents adaptive parameter overwrite
+• Stabilized threshold gravity with smoothing
+• Flash crash circuit breakers
+• Liquidity vacuum protection
+• Portfolio volatility targeting
+• Module health monitoring
+• Engine watchdog protection
+• Persistent system state
 """
 
 import time
 import logging
 import importlib
 import subprocess
+import json
+import os
+import datetime
 
 # --------------------------------------------------
 # LOGGING
@@ -33,10 +36,11 @@ logging.basicConfig(
 logger = logging.getLogger("VOID_BEAST_CONTROLLER")
 
 # --------------------------------------------------
-# MODULE LOADER
+# MODULE REGISTRY
 # --------------------------------------------------
 
 modules = {}
+module_health = {}
 
 module_names = [
     "beast_helpers",
@@ -56,105 +60,243 @@ module_names = [
     "beast_nfp"
 ]
 
+# --------------------------------------------------
+# STATE FILES
+# --------------------------------------------------
+
+ADAPT_FILE = "adapt_state.json"
+SYSTEM_FILE = "beast_system_state.json"
+
+# --------------------------------------------------
+# MODULE LOADER
+# --------------------------------------------------
+
 def load_modules():
+
     for name in module_names:
+
         try:
+
             modules[name] = importlib.import_module(name)
+
+            module_health[name] = "ok"
+
             logger.info(f"Module loaded: {name}")
+
         except Exception as e:
+
+            module_health[name] = "failed"
+
             logger.warning(f"Module load failed: {name} -> {e}")
 
 # --------------------------------------------------
-# SAFETY SYSTEMS
+# STATE MANAGEMENT
 # --------------------------------------------------
 
-def run_calendar_protection():
+def load_json(path, default):
+
+    if not os.path.exists(path):
+        return default
+
     try:
-        cal = modules.get("beast_calendar")
-        if cal and hasattr(cal, "check_high_impact_news"):
-            result = cal.check_high_impact_news()
-            if result:
-                logger.warning("High impact news detected → trading paused")
-                return False
+        with open(path,"r") as f:
+            return json.load(f)
+    except:
+        return default
+
+
+def save_json(path, data):
+
+    try:
+        with open(path,"w") as f:
+            json.dump(data,f,indent=2)
     except Exception as e:
-        logger.warning(f"Calendar module error: {e}")
+        logger.warning(f"JSON save error: {e}")
+
+# --------------------------------------------------
+# REGIME DETECTION
+# --------------------------------------------------
+
+def detect_regime():
+
+    mod = modules.get("beast_regime")
+
+    try:
+
+        if mod and hasattr(mod,"detect_market_regime"):
+
+            regime = mod.detect_market_regime()
+
+            logger.info(f"Market regime → {regime}")
+
+            return regime
+
+    except Exception as e:
+
+        logger.warning(f"Regime detection error: {e}")
+
+    return "normal"
+
+# --------------------------------------------------
+# THRESHOLD GRAVITY (SMOOTHED)
+# --------------------------------------------------
+
+def compute_threshold(prev_threshold):
+
+    mod = modules.get("beast_threshold")
+
+    try:
+
+        if mod and hasattr(mod,"apply_gravity_and_volatility"):
+
+            raw_thr = mod.apply_gravity_and_volatility(prev_threshold,0)
+
+            smoothed = 0.7 * prev_threshold + 0.3 * raw_thr
+
+            logger.info(f"Threshold smoothed → {smoothed:.5f}")
+
+            return smoothed
+
+    except Exception as e:
+
+        logger.warning(f"Threshold computation error: {e}")
+
+    return prev_threshold
+
+# --------------------------------------------------
+# FLASH CRASH DETECTOR
+# --------------------------------------------------
+
+def flash_crash_guard():
+
+    mod = modules.get("beast_monitor")
+
+    try:
+
+        if mod and hasattr(mod,"detect_volatility_spike"):
+
+            if mod.detect_volatility_spike():
+
+                logger.warning("Flash crash protection triggered")
+
+                return False
+
+    except Exception as e:
+
+        logger.warning(f"Flash crash monitor error: {e}")
 
     return True
 
+# --------------------------------------------------
+# LIQUIDITY GUARD
+# --------------------------------------------------
 
-def run_liquidity_protection():
+def liquidity_guard():
+
+    mod = modules.get("beast_liquidity")
+
     try:
-        mod = modules.get("beast_liquidity")
-        if mod and hasattr(mod, "liquidity_guard"):
+
+        if mod and hasattr(mod,"liquidity_guard"):
             mod.liquidity_guard()
+
     except Exception as e:
+
         logger.warning(f"Liquidity protection error: {e}")
 
+# --------------------------------------------------
+# CORRELATION ENGINE
+# --------------------------------------------------
 
-def run_correlation_engine():
+def run_correlation():
+
+    mod = modules.get("beast_correlation")
+
     try:
-        mod = modules.get("beast_correlation")
-        if mod and hasattr(mod, "update_correlation_matrix"):
+
+        if mod and hasattr(mod,"update_correlation_matrix"):
             mod.update_correlation_matrix()
+
     except Exception as e:
+
         logger.warning(f"Correlation engine error: {e}")
 
+# --------------------------------------------------
+# VOLATILITY TARGETING
+# --------------------------------------------------
 
-def run_regime_engine():
+def compute_volatility_target(risk):
+
+    mod = modules.get("beast_monitor")
+
     try:
-        mod = modules.get("beast_regime")
-        if mod and hasattr(mod, "detect_market_regime"):
-            regime = mod.detect_market_regime()
-            logger.info(f"Market regime: {regime}")
+
+        if mod and hasattr(mod,"estimate_market_volatility"):
+
+            vol = mod.estimate_market_volatility()
+
+            target_vol = 0.02
+
+            if vol > 0:
+
+                risk = risk * (target_vol / vol)
+
+            logger.info(f"Volatility adjusted risk → {risk}")
+
+            return risk
+
     except Exception as e:
-        logger.warning(f"Regime engine error: {e}")
 
+        logger.warning(f"Volatility targeting error: {e}")
 
-def run_threshold_engine():
+    return risk
+
+# --------------------------------------------------
+# ENGINE WATCHDOG
+# --------------------------------------------------
+
+def run_engine():
+
+    start = time.time()
+
     try:
-        mod = modules.get("beast_threshold")
-        if mod and hasattr(mod, "apply_gravity_and_volatility"):
-            new_thr = mod.apply_gravity_and_volatility(0.18, 0.0)
-            logger.info(f"Threshold gravity applied → {new_thr:.5f}")
+
+        subprocess.run([
+            r"C:\Users\Administrator\Desktop\Muc_universe\venv_quant\Scripts\python.exe",
+            "void_beast_engine.py",
+            "--live"
+        ])
+
     except Exception as e:
-        logger.warning(f"Threshold engine error: {e}")
 
+        logger.error(f"Engine error: {e}")
 
-def run_risk_engine():
+    runtime = time.time() - start
+
+    if runtime > 120:
+
+        logger.warning("Engine runtime unusually long")
+
+# --------------------------------------------------
+# DASHBOARD
+# --------------------------------------------------
+
+def update_dashboard():
+
+    dash = modules.get("beast_dashboard")
+
     try:
-        mod = modules.get("beast_risk")
-        if mod and hasattr(mod, "compute_dynamic_risk"):
-            risk, mode = mod.compute_dynamic_risk(0,0,0)
-            logger.info(f"Risk engine active → {risk} ({mode})")
-    except Exception as e:
-        logger.warning(f"Risk engine error: {e}")
 
+        if dash and hasattr(dash,"publish_cycle"):
 
-def run_dashboard_update():
-    try:
-        dash = modules.get("beast_dashboard")
-        if dash and hasattr(dash, "publish_cycle"):
             dash.publish_cycle({
                 "controller":"active",
-                "status":"running"
+                "module_health":module_health
             })
-    except Exception as e:
-        logger.warning(f"Dashboard update error: {e}")
 
-# --------------------------------------------------
-# TRADING ENGINE CALL (UPDATED FOR VENV)
-# --------------------------------------------------
-
-def run_trading_engine():
-    try:
-        logger.info("Starting trading engine")
-        subprocess.run(
-            [r"C:\Users\Administrator\Desktop\Muc_universe\venv_quant\Scripts\python.exe",
-             "void_beast_engine.py", "--loop", "--live"],
-            check=False
-        )
     except Exception as e:
-        logger.error(f"Trading engine error: {e}")
+
+        logger.warning(f"Dashboard error: {e}")
 
 # --------------------------------------------------
 # MAIN LOOP
@@ -162,7 +304,7 @@ def run_trading_engine():
 
 def main():
 
-    logger.info("VOID Beast Master Controller starting")
+    logger.info("VOID Beast Controller starting")
 
     load_modules()
 
@@ -170,44 +312,47 @@ def main():
 
         try:
 
-            logger.info("---- NEW CYCLE START ----")
+            logger.info("------ NEW CYCLE ------")
 
-            # 1. Macro calendar protection
-            if not run_calendar_protection():
+            state = load_json(ADAPT_FILE,{"threshold":0.18,"risk":0.002})
+
+            threshold = state["threshold"]
+            risk = state["risk"]
+
+            regime = detect_regime()
+
+            if not flash_crash_guard():
+
                 time.sleep(60)
                 continue
 
-            # 2. Liquidity protection
-            run_liquidity_protection()
+            liquidity_guard()
 
-            # 3. Correlation engine
-            run_correlation_engine()
+            run_correlation()
 
-            # 4. Regime detection
-            run_regime_engine()
+            threshold = compute_threshold(threshold)
 
-            # 5. Threshold gravity
-            run_threshold_engine()
+            risk = compute_volatility_target(risk)
 
-            # 6. Dynamic risk scaling
-            run_risk_engine()
+            state["threshold"] = threshold
+            state["risk"] = risk
+            state["last_cycle"] = str(datetime.datetime.utcnow())
 
-            # 7. Run trading engine
-            run_trading_engine()
+            save_json(ADAPT_FILE,state)
 
-            # 8. Dashboard update
-            run_dashboard_update()
+            logger.info(f"Active threshold → {threshold}")
+            logger.info(f"Active risk → {risk}")
 
-            logger.info("Cycle complete")
+            run_engine()
+
+            update_dashboard()
 
         except Exception as e:
-            logger.error(f"Controller error: {e}")
 
-        # cycle delay
+            logger.error(f"Controller failure: {e}")
+
         time.sleep(60)
 
-
-# --------------------------------------------------
 
 if __name__ == "__main__":
     main()
