@@ -3,12 +3,12 @@ import React, { useEffect, useRef, useState } from "react";
 import axios from "axios";
 import { Line } from "react-chartjs-2";
 import { Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Legend } from "chart.js";
-import bg from "./assets/void-bg.jpg";
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Legend);
 
-const API_BASE = window.location.origin;
-const WS_URL = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws";
+// Use the backend host directly so dev (vite) and backend (uvicorn) connect reliably
+const API_BASE = "http://127.0.0.1:8000";
+const WS_URL = "ws://127.0.0.1:8000/ws";
 
 export default function App() {
   const [connected, setConnected] = useState(false);
@@ -104,7 +104,6 @@ export default function App() {
       }
     } else if (msg.type === "control") {
       addLog("CTL", JSON.stringify(msg.payload));
-      // broadcast may include bot state changes
       fetchStatus();
     }
   }
@@ -187,15 +186,15 @@ export default function App() {
     ],
   };
 
+  // Use two fallback image paths: /void-bg.jpg (public root) and /assets/void-bg.jpg (public/assets/)
+  const backgroundStyle = {
+    backgroundImage: "url('/void-bg.jpg'), url('/assets/void-bg.jpg')",
+    backgroundSize: "cover",
+    backgroundPosition: "center",
+  };
+
   return (
-    <div
-      className="min-h-screen p-6"
-      style={{
-        backgroundImage: `url(${bg})`,
-        backgroundSize: "cover",
-        backgroundPosition: "center",
-      }}
-    >
+    <div className="min-h-screen p-6" style={backgroundStyle}>
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-4">
           <div className="header-logo text-beast-green text-2xl">VOID BEAST</div>
@@ -205,11 +204,7 @@ export default function App() {
         <div className="flex items-center gap-3">
           <div className="px-3 py-1 card small">
             Status:{" "}
-            {connected ? (
-              <span className="text-green-400">Connected</span>
-            ) : (
-              <span className="text-red-400">Disconnected</span>
-            )}
+            {connected ? <span className="text-green-400">Connected</span> : <span className="text-red-400">Disconnected</span>}
           </div>
           <div className="px-3 py-1 card small">Bot: {botInfo.running ? "Running" : "Stopped"}</div>
         </div>
@@ -248,9 +243,7 @@ export default function App() {
                         <span className="font-semibold mr-2">{t.symbol}</span>
                         <span className="text-xs text-gray-400">closed</span>
                       </div>
-                      <div className={`text-sm ${Number(t.profit) >= 0 ? "text-beast-green" : "text-red-400"}`}>
-                        {t.profit ?? 0}
-                      </div>
+                      <div className={`text-sm ${Number(t.profit) >= 0 ? "text-beast-green" : "text-red-400"}`}>{t.profit ?? 0}</div>
                     </li>
                   ))}
                 </ul>
@@ -344,26 +337,11 @@ function LoginForm({ onLogin, busy }) {
 
   return (
     <div className="flex gap-2 items-center">
-      <input
-        value={u}
-        onChange={(e) => setU(e.target.value)}
-        className="p-2 rounded bg-black/20 text-sm"
-        placeholder="username"
-      />
-      <input
-        value={p}
-        onChange={(e) => setP(e.target.value)}
-        type="password"
-        className="p-2 rounded bg-black/20 text-sm"
-        placeholder="password"
-      />
-      <button
-        onClick={() => onLogin(u, p)}
-        className="px-3 py-2 bg-beast-green rounded text-black font-semibold"
-        disabled={busy}
-      >
+      <input value={u} onChange={(e) => setU(e.target.value)} className="p-2 rounded bg-black/20 text-sm" placeholder="username" />
+      <input value={p} onChange={(e) => setP(e.target.value)} type="password" className="p-2 rounded bg-black/20 text-sm" placeholder="password" />
+      <button onClick={() => onLogin(u, p)} className="px-3 py-2 bg-beast-green rounded text-black font-semibold" disabled={busy}>
         {busy ? "..." : "Login"}
       </button>
     </div>
   );
-      }
+  }
