@@ -310,7 +310,8 @@ async def websocket_endpoint(websocket: WebSocket):
 
 @app.get("/")
 async def index():
+    # If frontend index exists, serve it; otherwise return a simple JSON health message
     index_path = os.path.join(FRONTEND_DIR, "index.html")
     if os.path.isfile(index_path):
         return FileResponse(index_path)
-    return {"status": "dashboard server running"}
+    return JSONResponse({"message": "Void Beast Dashboard API is running", "status": "ok"})
