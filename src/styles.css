@@ -1,0 +1,28 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root { height: 100%; }
+
+body {
+  @apply bg-beast-black text-gray-100;
+  background-size: cover;
+  background-position: center;
+}
+
+.header-logo {
+  font-weight: 800;
+  font-size: 20px;
+  letter-spacing: 2px;
+}
+
+.ticker {
+  font-family: monospace;
+  color: #9bd2ff;
+}
+
+.card {
+  background: rgba(6,6,6,0.6);
+  border: 1px solid rgba(255,255,255,0.03);
+  backdrop-filter: blur(4px);
+}
