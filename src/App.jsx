@@ -11,6 +11,7 @@ import {
   Tooltip,
   Legend,
 } from "chart.js";
+import bg from "./assets/void-bg.jpg";
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Legend);
 
@@ -24,7 +25,8 @@ export default function App() {
   const [logs, setLogs] = useState([]);
   const [analysis, setAnalysis] = useState({});
   const [botInfo, setBotInfo] = useState({ running: false, pid: null });
-  const [token, setToken] = useState(null);
+  // Pre-set token so UI skips login (you can remove this to enable login flow)
+  const [token, setToken] = useState("admin-token");
   const wsRef = useRef(null);
   const [pnlSeries, setPnlSeries] = useState([]); // array of {ts, profit}
   const [ticker, setTicker] = useState("");
@@ -198,7 +200,7 @@ export default function App() {
     <div
       className="min-h-screen p-6"
       style={{
-        backgroundImage: "url('/assets/void-bg.jpg')",
+        backgroundImage: `url(${bg})`,
         backgroundSize: "cover",
         backgroundPosition: "center",
       }}
@@ -296,7 +298,9 @@ export default function App() {
           {/* Risk Monitor */}
           <div className="card p-4">
             <h3 className="mb-2 font-bold">Risk Monitor</h3>
-            <div className="text-sm">Dynamic risk: <strong>Auto</strong></div>
+            <div className="text-sm">
+              Dynamic risk: <strong>Auto</strong>
+            </div>
             <div className="text-sm mt-2">Thresholds: 0.18 | Current exposure: 0.12</div>
             <div className="mt-3 h-2 bg-white/5 rounded">
               <div style={{ width: "36%" }} className="h-2 bg-beast-red rounded" />
@@ -324,8 +328,12 @@ export default function App() {
                 <LoginForm onLogin={doLogin} busy={loginBusy} />
               ) : (
                 <>
-                  <button onClick={startBot} className="px-3 py-2 bg-green-500 rounded">Start</button>
-                  <button onClick={stopBot} className="px-3 py-2 bg-red-600 rounded">Stop</button>
+                  <button onClick={startBot} className="px-3 py-2 bg-green-500 rounded">
+                    Start
+                  </button>
+                  <button onClick={stopBot} className="px-3 py-2 bg-red-600 rounded">
+                    Stop
+                  </button>
                 </>
               )}
             </div>
@@ -367,4 +375,4 @@ function LoginForm({ onLogin, busy }) {
       </button>
     </div>
   );
-}
+        }
