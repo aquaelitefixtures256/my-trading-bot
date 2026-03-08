@@ -189,7 +189,7 @@ export default function App() {
   // Use two fallback image paths: /void-bg.jpg (public root) and /assets/void-bg.jpg (public/assets/)
   const backgroundStyle = {
     backgroundImage: "url('/void-bg.jpg'), url('/assets/void-bg.jpg')",
-    backgroundSize: "cover",
+    backgroundSize: "contain",
     backgroundPosition: "center",
   };
 
