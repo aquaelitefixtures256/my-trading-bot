@@ -16,25 +16,37 @@ from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-# --- Config (env vars) ---
-DASHBOARD_KEY = os.getenv("DASHBOARD_KEY", "VOID_TEST_KEY")
-DB_PATH = os.getenv("DASHBOARD_DB", "dashboard.db")
-FRONTEND_DIR = os.getenv("FRONTEND_DIR", "frontend")
-JWT_SECRET = os.getenv("JWT_SECRET", "supersecret_jwt_key_change_me!")
+# -----------------------------
+# HARDCODED CONFIG (as requested)
+# -----------------------------
+# admin bypass token (frontend may post this)
+ADMIN_BYPASS_TOKEN = "12345678"
+
+# JWT secret used for issuing tokens
+JWT_SECRET = "void_beast_9f3a"
 JWT_ALGO = "HS256"
-ADMIN_USER = os.getenv("ADMIN_USER", "admin")
-ADMIN_PASS = os.getenv("ADMIN_PASS", "password")
-# token the frontend currently uses by default (accept this as bypass for local dev)
-ADMIN_BYPASS_TOKEN = os.getenv("ADMIN_BYPASS_TOKEN", "admin-token")
 
-# Determine default bot location (parent of void_beast_dashboard)
-_default_parent = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-_default_bot_path = os.path.join(_default_parent, "voidx_beast.py")
-# Default; can be overridden with BOT_CMD env var
-BOT_CMD = os.getenv("BOT_CMD", f'{sys.executable} "{_default_bot_path}"')
-BOT_WORKDIR = os.getenv("BOT_WORKDIR", _default_parent)
+# Dashboard ingest key (what the bot must send when posting /ingest)
+DASHBOARD_KEY = "ALT_BEAST_03MAR2026_9f3a"
 
-# --- Logging ---
+# Database and frontend directory (relative to this repo)
+DB_PATH = "dashboard.db"
+FRONTEND_DIR = "frontend"
+
+# Bot executable + script path (use your venv Python and bot script)
+# NOTE: we provide the full quoted command string so shlex.split works on Windows.
+_python_exe = r"C:\Users\Administrator\Desktop\Muc_universe\venv_quant\Scripts\python.exe"
+_bot_script = r"C:\Users\Administrator\Desktop\Muc_universe\voidx_beast.py"
+BOT_CMD = f'"{_python_exe}" "{_bot_script}"'
+
+# Working directory for the bot process (where voidx_beast.py expects to run)
+BOT_WORKDIR = r"C:\Users\Administrator\Desktop\Muc_universe"
+
+# Admin user (for JWT subject)
+ADMIN_USER = "admin"
+ADMIN_PASS = "password"  # you can change this later if you want to use real login
+
+# Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("dashboard_server")
 
@@ -214,10 +226,9 @@ def create_access_token(subject: str, expires_in: int = 3600):
     return token
 
 def verify_token(token: str) -> Optional[str]:
-    # Accept a valid JWT or the bypass admin token
+    # Accept the bypass token or a valid JWT
     if not token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="missing token")
-    # bypass
     if token == ADMIN_BYPASS_TOKEN:
         return ADMIN_USER
     try:
@@ -261,24 +272,13 @@ class BotProcessManager:
                     # persist & broadcast
                     try:
                         persist_event("log", {"level": "INFO", "message": ln, "source": "bot"})
-                        # broadcast minimal bot_log event
-                        threading.Thread(target=lambda: None).start()
-                        # broadcast asynchronously — use manager.broadcast but can't await here
-                        try:
-                            import asyncio
-                            asyncio.get_event_loop().call_soon_threadsafe(
-                                lambda: None
-                            )
-                        except Exception:
-                            pass
-                        # We'll use a simple synchronous broadcast by scheduling in thread:
+                        # broadcast bot_log asynchronously
                         def _b():
                             try:
                                 import asyncio
                                 coro = manager.broadcast({"type":"bot_log","payload":{"message":ln},"ts":int(time.time())})
                                 asyncio.run(coro)
                             except Exception:
-                                # If broadcasting fails in thread, ignore
                                 pass
                         threading.Thread(target=_b, daemon=True).start()
                     except Exception:
@@ -293,20 +293,18 @@ class BotProcessManager:
         if self.is_running():
             return False, "already running"
 
-        # Use BOT_CMD env override if provided
-        cmd_env = os.getenv("BOT_CMD")
-        cmd_to_use = cmd_env if cmd_env else self.cmd
+        # Use BOT_CMD override defined above (hardcoded)
+        cmd_to_use = BOT_CMD
 
         try:
             parts = shlex.split(cmd_to_use)
         except Exception:
             parts = cmd_to_use.split()
 
-        # If command appears to be a script path (endswith .py), ensure it runs with current python
+        # Ensure python interpreter used if a .py script is present
         if parts and parts[0].lower().endswith(".py"):
             cmd_list = [sys.executable] + parts
         else:
-            # if first token is not a python executable, but the command contains a .py later, prepend sys.executable
             if any(p.lower().endswith(".py") for p in parts) and not parts[0].lower().endswith(("python", "python.exe")):
                 cmd_list = [sys.executable] + parts
             else:
@@ -360,7 +358,7 @@ class BotProcessManager:
     def get_info(self):
         return {"running": self.is_running(), "pid": self.proc.pid if self.proc else None}
 
-# initialize manager with defaults
+# initialize manager with defaults (hardcoded)
 bot_manager = BotProcessManager(BOT_CMD, BOT_WORKDIR)
 
 # --- API endpoints ---
