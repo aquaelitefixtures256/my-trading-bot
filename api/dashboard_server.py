@@ -7,10 +7,11 @@ import sqlite3
 import logging
 import shlex
 import subprocess
-from typing import Dict, Any
+import threading
+from typing import Dict, Any, Optional
 
 import jwt
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, HTTPException, Depends, status
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends, status
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -22,17 +23,15 @@ FRONTEND_DIR = os.getenv("FRONTEND_DIR", "frontend")
 JWT_SECRET = os.getenv("JWT_SECRET", "supersecret_jwt_key_change_me!")
 JWT_ALGO = "HS256"
 ADMIN_USER = os.getenv("ADMIN_USER", "admin")
-ADMIN_PASS = os.getenv("ADMIN_PASS", "password")  # replace with strong secret in production
+ADMIN_PASS = os.getenv("ADMIN_PASS", "password")
+# token the frontend currently uses by default (accept this as bypass for local dev)
+ADMIN_BYPASS_TOKEN = os.getenv("ADMIN_BYPASS_TOKEN", "admin-token")
 
-# Determine a sensible default bot path (assumes bot is one level above void_beast_dashboard)
-# __file__ -> .../void_beast_dashboard/api/dashboard_server.py
-# parent x3 -> .../Muc_universe
-_default_parent = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+# Determine default bot location (parent of void_beast_dashboard)
+_default_parent = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 _default_bot_path = os.path.join(_default_parent, "voidx_beast.py")
-
-# BOT_CMD: by default run the bot with the same Python interpreter being used for the server
-BOT_CMD = os.getenv("BOT_CMD", f"{sys.executable} \"{_default_bot_path}\"")
-# BOT_WORKDIR: default to the Muc_universe parent (so relative imports/files in bot still work)
+# Default; can be overridden with BOT_CMD env var
+BOT_CMD = os.getenv("BOT_CMD", f'{sys.executable} "{_default_bot_path}"')
 BOT_WORKDIR = os.getenv("BOT_WORKDIR", _default_parent)
 
 # --- Logging ---
@@ -58,7 +57,7 @@ if os.path.isdir(FRONTEND_DIR):
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 cur = conn.cursor()
 
-# Create minimal schema if not exists
+# Create minimal schema if not exists, plus mt5_status table
 cur.executescript("""
 CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -95,6 +94,12 @@ CREATE TABLE IF NOT EXISTS errors (
     message TEXT,
     meta TEXT
 );
+CREATE TABLE IF NOT EXISTS mt5_status (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts INTEGER NOT NULL,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL
+);
 """)
 conn.commit()
 
@@ -117,7 +122,7 @@ class ConnectionManager:
     async def broadcast(self, message: Dict[str, Any]):
         data = json.dumps(message, default=str)
         to_remove = []
-        for ws in self.active:
+        for ws in list(self.active):
             try:
                 await ws.send_text(data)
             except Exception:
@@ -131,43 +136,66 @@ manager = ConnectionManager()
 def persist_event(event_type: str, payload: Any):
     global last_event_ts
     ts = int(time.time())
-    cur.execute("INSERT INTO events(ts,type,payload) VALUES (?,?,?)", (ts, event_type, json.dumps(payload)))
-    conn.commit()
-    last_event_ts = ts
-
-    if event_type in ("trade_open", "trade_close"):
-        p = payload
-        cur.execute(
-            "INSERT INTO trades(ts,symbol,side,lots,open_price,close_price,profit,status,meta) VALUES (?,?,?,?,?,?,?,?,?)",
-            (
-                ts,
-                p.get("symbol"),
-                p.get("direction") or p.get("side"),
-                p.get("lot") or p.get("lots"),
-                p.get("open_price"),
-                p.get("close_price"),
-                p.get("profit"),
-                p.get("status") or ("closed" if event_type == "trade_close" else "open"),
-                json.dumps(p.get("meta", {}))
-            )
-        )
+    try:
+        cur.execute("INSERT INTO events(ts,type,payload) VALUES (?,?,?)", (ts, event_type, json.dumps(payload)))
         conn.commit()
+        last_event_ts = ts
+    except Exception:
+        logger.exception("failed to persist event")
+
+    # specialized handling
+    if event_type in ("trade_open", "trade_close"):
+        try:
+            p = payload
+            cur.execute(
+                "INSERT INTO trades(ts,symbol,side,lots,open_price,close_price,profit,status,meta) VALUES (?,?,?,?,?,?,?,?,?)",
+                (
+                    ts,
+                    p.get("symbol"),
+                    p.get("direction") or p.get("side"),
+                    p.get("lot") or p.get("lots"),
+                    p.get("open_price"),
+                    p.get("close_price"),
+                    p.get("profit"),
+                    p.get("status") or ("closed" if event_type == "trade_close" else "open"),
+                    json.dumps(p.get("meta", {}))
+                )
+            )
+            conn.commit()
+        except Exception:
+            logger.exception("failed to persist trade")
 
     if event_type == "analysis":
-        p = payload
-        cur.execute(
-            "INSERT INTO analyses(ts,symbol,technical,fundamental,sentiment,final_score,meta) VALUES (?,?,?,?,?,?,?)",
-            (ts, p.get("symbol"), p.get("technical"), p.get("fundamental"), p.get("sentiment"), p.get("final_score"), json.dumps(p.get("meta", {})))
-        )
-        conn.commit()
+        try:
+            p = payload
+            cur.execute(
+                "INSERT INTO analyses(ts,symbol,technical,fundamental,sentiment,final_score,meta) VALUES (?,?,?,?,?,?,?)",
+                (ts, p.get("symbol"), p.get("technical"), p.get("fundamental"), p.get("sentiment"), p.get("final_score"), json.dumps(p.get("meta", {})))
+            )
+            conn.commit()
+        except Exception:
+            logger.exception("failed to persist analysis")
 
     if event_type == "error":
-        p = payload
-        cur.execute(
-            "INSERT INTO errors(ts,level,message,meta) VALUES (?,?,?,?)",
-            (ts, p.get("level", "ERROR"), p.get("message"), json.dumps(p.get("meta", {})))
-        )
-        conn.commit()
+        try:
+            p = payload
+            cur.execute(
+                "INSERT INTO errors(ts,level,message,meta) VALUES (?,?,?,?)",
+                (ts, p.get("level", "ERROR"), p.get("message"), json.dumps(p.get("meta", {})))
+            )
+            conn.commit()
+        except Exception:
+            logger.exception("failed to persist error")
+
+    # mt5 status/balance/equity: store last known values
+    if event_type in ("mt5_status", "balance", "equity"):
+        try:
+            key = event_type
+            value = json.dumps(payload)
+            cur.execute("INSERT INTO mt5_status(ts,key,value) VALUES (?,?,?)", (ts, key, value))
+            conn.commit()
+        except Exception:
+            logger.exception("failed to persist mt5 status")
 
 # --- Models ---
 class IngestModel(BaseModel):
@@ -185,7 +213,13 @@ def create_access_token(subject: str, expires_in: int = 3600):
     token = jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGO)
     return token
 
-def verify_token(token: str):
+def verify_token(token: str) -> Optional[str]:
+    # Accept a valid JWT or the bypass admin token
+    if not token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="missing token")
+    # bypass
+    if token == ADMIN_BYPASS_TOKEN:
+        return ADMIN_USER
     try:
         data = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGO])
         return data.get("sub")
@@ -209,38 +243,76 @@ class BotProcessManager:
     def __init__(self, cmd: str, workdir: str = "."):
         self.cmd = cmd
         self.workdir = workdir
-        self.proc: subprocess.Popen | None = None
+        self.proc: Optional[subprocess.Popen] = None
+        self._stdout_thread: Optional[threading.Thread] = None
+        self._stderr_thread: Optional[threading.Thread] = None
 
     def is_running(self):
         return self.proc is not None and self.proc.poll() is None
+
+    def _start_stream_reader(self, stream, label: str):
+        def _reader():
+            try:
+                for line in iter(stream.readline, ""):
+                    if not line:
+                        break
+                    ln = line.rstrip()
+                    logger.info(f"[bot {label}] {ln}")
+                    # persist & broadcast
+                    try:
+                        persist_event("log", {"level": "INFO", "message": ln, "source": "bot"})
+                        # broadcast minimal bot_log event
+                        threading.Thread(target=lambda: None).start()
+                        # broadcast asynchronously — use manager.broadcast but can't await here
+                        try:
+                            import asyncio
+                            asyncio.get_event_loop().call_soon_threadsafe(
+                                lambda: None
+                            )
+                        except Exception:
+                            pass
+                        # We'll use a simple synchronous broadcast by scheduling in thread:
+                        def _b():
+                            try:
+                                import asyncio
+                                coro = manager.broadcast({"type":"bot_log","payload":{"message":ln},"ts":int(time.time())})
+                                asyncio.run(coro)
+                            except Exception:
+                                # If broadcasting fails in thread, ignore
+                                pass
+                        threading.Thread(target=_b, daemon=True).start()
+                    except Exception:
+                        logger.exception("failed handling bot output line")
+            except Exception:
+                pass
+        t = threading.Thread(target=_reader, daemon=True)
+        t.start()
+        return t
 
     def start(self):
         if self.is_running():
             return False, "already running"
 
-        # Build command list; prefer explicit sys.executable if BOT_CMD doesn't include interpreter
-        try:
-            # If BOT_CMD starts with a Python executable reference, keep as-is; otherwise ensure correct interpreter
-            # Example BOT_CMD default is like: "C:\...\python.exe \"C:\...\voidx_beast.py\""
-            cmd_env = os.getenv("BOT_CMD")
-            if cmd_env:
-                cmd_to_use = cmd_env
-            else:
-                cmd_to_use = self.cmd
+        # Use BOT_CMD env override if provided
+        cmd_env = os.getenv("BOT_CMD")
+        cmd_to_use = cmd_env if cmd_env else self.cmd
 
-            # If the command does not reference a python executable and looks like a script path, prefix with sys.executable
+        try:
             parts = shlex.split(cmd_to_use)
-            if len(parts) > 0 and parts[0].lower().endswith((".py",)):
-                # first token is a script path — prepend sys.executable
+        except Exception:
+            parts = cmd_to_use.split()
+
+        # If command appears to be a script path (endswith .py), ensure it runs with current python
+        if parts and parts[0].lower().endswith(".py"):
+            cmd_list = [sys.executable] + parts
+        else:
+            # if first token is not a python executable, but the command contains a .py later, prepend sys.executable
+            if any(p.lower().endswith(".py") for p in parts) and not parts[0].lower().endswith(("python", "python.exe")):
                 cmd_list = [sys.executable] + parts
             else:
-                cmd_list = shlex.split(cmd_to_use)
-        except Exception:
-            # fallback conservative split
-            cmd_list = shlex.split(self.cmd)
+                cmd_list = parts
 
         logger.info(f"Starting bot: {cmd_list} in {self.workdir}")
-
         try:
             self.proc = subprocess.Popen(
                 cmd_list,
@@ -250,39 +322,23 @@ class BotProcessManager:
                 bufsize=1,
                 universal_newlines=True
             )
-
-            # Optionally start background readers for stdout/stderr so process doesn't block
-            def _drain_stream(stream, label):
-                try:
-                    for line in stream:
-                        logger.info(f"[bot {label}] {line.rstrip()}")
-                        # Also forward as dashboard 'log' events
-                        try:
-                            persist_event("log", {"level": "INFO", "message": line.rstrip(), "source": "bot"})
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-
-            # spawn readers
-            try:
-                import threading
-                if self.proc.stdout:
-                    t_out = threading.Thread(target=_drain_stream, args=(self.proc.stdout, "out"), daemon=True)
-                    t_out.start()
-                if self.proc.stderr:
-                    t_err = threading.Thread(target=_drain_stream, args=(self.proc.stderr, "err"), daemon=True)
-                    t_err.start()
-            except Exception:
-                logger.debug("Failed to attach stdout/stderr readers")
-
-            return True, "started"
         except FileNotFoundError as e:
             logger.exception("Bot start failed - file not found")
             return False, f"file not found: {e}"
         except Exception as e:
             logger.exception("Bot start failed")
             return False, str(e)
+
+        # Attach readers
+        try:
+            if self.proc.stdout:
+                self._stdout_thread = self._start_stream_reader(self.proc.stdout, "out")
+            if self.proc.stderr:
+                self._stderr_thread = self._start_stream_reader(self.proc.stderr, "err")
+        except Exception:
+            logger.exception("Failed to attach stdout/stderr readers")
+
+        return True, "started"
 
     def stop(self):
         if not self.is_running():
@@ -295,7 +351,7 @@ class BotProcessManager:
             except subprocess.TimeoutExpired:
                 self.proc.kill()
                 self.proc.wait(timeout=5)
-        except Exception as e:
+        except Exception:
             logger.exception("Failed to stop process")
         finally:
             self.proc = None
@@ -304,7 +360,7 @@ class BotProcessManager:
     def get_info(self):
         return {"running": self.is_running(), "pid": self.proc.pid if self.proc else None}
 
-# initialize manager with defaults (but it will respect BOT_CMD/BOT_WORKDIR env vars)
+# initialize manager with defaults
 bot_manager = BotProcessManager(BOT_CMD, BOT_WORKDIR)
 
 # --- API endpoints ---
@@ -335,18 +391,24 @@ async def login(creds: AuthModel):
 
 @app.post("/control/start")
 async def control_start(authorization: str = Depends(lambda request=None: (request := request) and request.headers.get("Authorization"))):
+    # require valid user (JWT or bypass token)
     user = await get_current_user(authorization)
-    # start bot
     ok, msg = bot_manager.start()
     # broadcast status
-    await manager.broadcast({"type": "control", "payload": {"action": "start", "ok": ok, "msg": msg, "user": user}, "ts": int(time.time())})
+    try:
+        await manager.broadcast({"type": "control", "payload": {"action": "start", "ok": ok, "msg": msg, "user": user}, "ts": int(time.time())})
+    except Exception:
+        logger.exception("broadcast failed")
     return {"ok": ok, "msg": msg}
 
 @app.post("/control/stop")
 async def control_stop(authorization: str = Depends(lambda request=None: (request := request) and request.headers.get("Authorization"))):
     user = await get_current_user(authorization)
     ok, msg = bot_manager.stop()
-    await manager.broadcast({"type": "control", "payload": {"action": "stop", "ok": ok, "msg": msg, "user": user}, "ts": int(time.time())})
+    try:
+        await manager.broadcast({"type": "control", "payload": {"action": "stop", "ok": ok, "msg": msg, "user": user}, "ts": int(time.time())})
+    except Exception:
+        logger.exception("broadcast failed")
     return {"ok": ok, "msg": msg}
 
 @app.get("/status")
@@ -356,13 +418,30 @@ async def status():
     total = cur.fetchone()[0]
     bot_info = bot_manager.get_info()
     last_event = last_event_ts
-    return {"status": "ok", "events": total, "bot": bot_info, "last_event": last_event}
+    # fetch latest mt5 status values
+    cur.execute("SELECT key,value,ts FROM mt5_status ORDER BY id DESC")
+    rows = cur.fetchall()
+    mt5 = {}
+    for r in rows:
+        try:
+            val = json.loads(r[1])
+        except Exception:
+            val = r[1]
+        mt5[r[0]] = {"value": val, "ts": r[2]}
+    return {"status": "ok", "events": total, "bot": bot_info, "last_event": last_event, "mt5": mt5}
 
 @app.get("/events")
 async def events(limit: int = 50):
     cur.execute("SELECT ts,type,payload FROM events ORDER BY id DESC LIMIT ?", (limit,))
     rows = cur.fetchall()
-    return [{"ts": r[0], "type": r[1], "payload": json.loads(r[2])} for r in rows]
+    out = []
+    for r in rows:
+        try:
+            payload = json.loads(r[2])
+        except Exception:
+            payload = r[2]
+        out.append({"ts": r[0], "type": r[1], "payload": payload})
+    return out
 
 @app.get("/trades")
 async def trades(limit: int = 100):
@@ -375,9 +454,12 @@ async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     try:
         while True:
-            # keepalive - the client may send pings
-            await websocket.receive_text()
-    except WebSocketDisconnect:
+            # keepalive - the client may send pings or messages
+            try:
+                _ = await websocket.receive_text()
+            except WebSocketDisconnect:
+                break
+    finally:
         manager.disconnect(websocket)
 
 @app.get("/")
