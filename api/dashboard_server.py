@@ -1,60 +1,44 @@
 # api/dashboard_server.py
 import os
-import sys
 import time
 import json
 import sqlite3
 import logging
-import shlex
-import subprocess
-import threading
 from typing import Dict, Any, Optional
 
-import jwt
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends, status
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, status
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-# -----------------------------
-# HARDCODED CONFIG (as requested)
-# -----------------------------
-# admin bypass token (frontend may post this)
-ADMIN_BYPASS_TOKEN = "12345678"
+# -------------------------
+# CONFIG - adjust if needed
+# -------------------------
+# Secret key the bot will use to POST /ingest
+# You can override by setting env var DASHBOARD_KEY if you prefer
+DASHBOARD_KEY = os.getenv("DASHBOARD_KEY", "ALT_BEAST_03MAR2026_9f3a")
 
-# JWT secret used for issuing tokens
-JWT_SECRET = "void_beast_9f3a"
-JWT_ALGO = "HS256"
+# JWT secret for admin login (optional; login not required for ingest)
+JWT_SECRET = os.getenv("JWT_SECRET", "void_beast_9f3a")
 
-# Dashboard ingest key (what the bot must send when posting /ingest)
-DASHBOARD_KEY = "ALT_BEAST_03MAR2026_9f3a"
+# Admin bypass token (frontend currently can use this) - not used for ingest
+ADMIN_BYPASS_TOKEN = os.getenv("ADMIN_BYPASS_TOKEN", "12345678")
 
-# Database and frontend directory (relative to this repo)
-DB_PATH = "dashboard.db"
-FRONTEND_DIR = "frontend"
-
-# Bot executable + script path (use your venv Python and bot script)
-# NOTE: we provide the full quoted command string so shlex.split works on Windows.
-_python_exe = r"C:\Users\Administrator\Desktop\Muc_universe\venv_quant\Scripts\python.exe"
-_bot_script = r"C:\Users\Administrator\Desktop\Muc_universe\voidx_beast.py"
-BOT_CMD = f'"{_python_exe}" "{_bot_script}"'
-
-# Working directory for the bot process (where voidx_beast.py expects to run)
-BOT_WORKDIR = r"C:\Users\Administrator\Desktop\Muc_universe"
-
-# Admin user (for JWT subject)
-ADMIN_USER = "admin"
-ADMIN_PASS = "password"  # you can change this later if you want to use real login
+# DB + frontend folder
+DB_PATH = os.getenv("DASHBOARD_DB", "dashboard.db")
+FRONTEND_DIR = os.getenv("FRONTEND_DIR", "frontend")
 
 # Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("dashboard_server")
 
-# --- FastAPI app ---
-app = FastAPI(title="VOID Beast Dashboard")
+# -------------------------
+# FASTAPI app + CORS
+# -------------------------
+app = FastAPI(title="VOID Beast Dashboard (passive ingest mode)")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # tighten in production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -65,11 +49,12 @@ if os.path.isdir(FRONTEND_DIR):
     from fastapi.staticfiles import StaticFiles
     app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
 
-# --- DB (sqlite) ---
+# -------------------------
+# SQLITE: simple schema
+# -------------------------
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 cur = conn.cursor()
 
-# Create minimal schema if not exists, plus mt5_status table
 cur.executescript("""
 CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -115,10 +100,12 @@ CREATE TABLE IF NOT EXISTS mt5_status (
 """)
 conn.commit()
 
-# track last event timestamp (for showing "connected")
-last_event_ts = 0
+# Last event timestamp (used to show "connected")
+last_event_ts: int = 0
 
-# --- websocket manager ---
+# -------------------------
+# WebSocket manager
+# -------------------------
 class ConnectionManager:
     def __init__(self):
         self.active: list[WebSocket] = []
@@ -144,8 +131,11 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
-# --- Helpers to persist events ---
+# -------------------------
+# Helpers: persist & broadcast
+# -------------------------
 def persist_event(event_type: str, payload: Any):
+    """Persist the raw event and do small normalization for trades/analysis/errors/mt5."""
     global last_event_ts
     ts = int(time.time())
     try:
@@ -153,9 +143,9 @@ def persist_event(event_type: str, payload: Any):
         conn.commit()
         last_event_ts = ts
     except Exception:
-        logger.exception("failed to persist event")
+        logger.exception("persist events failed")
 
-    # specialized handling
+    # Specialized handling
     if event_type in ("trade_open", "trade_close"):
         try:
             p = payload
@@ -175,7 +165,7 @@ def persist_event(event_type: str, payload: Any):
             )
             conn.commit()
         except Exception:
-            logger.exception("failed to persist trade")
+            logger.exception("persist trade failed")
 
     if event_type == "analysis":
         try:
@@ -186,7 +176,7 @@ def persist_event(event_type: str, payload: Any):
             )
             conn.commit()
         except Exception:
-            logger.exception("failed to persist analysis")
+            logger.exception("persist analysis failed")
 
     if event_type == "error":
         try:
@@ -197,9 +187,8 @@ def persist_event(event_type: str, payload: Any):
             )
             conn.commit()
         except Exception:
-            logger.exception("failed to persist error")
+            logger.exception("persist error failed")
 
-    # mt5 status/balance/equity: store last known values
     if event_type in ("mt5_status", "balance", "equity"):
         try:
             key = event_type
@@ -207,164 +196,29 @@ def persist_event(event_type: str, payload: Any):
             cur.execute("INSERT INTO mt5_status(ts,key,value) VALUES (?,?,?)", (ts, key, value))
             conn.commit()
         except Exception:
-            logger.exception("failed to persist mt5 status")
+            logger.exception("persist mt5 status failed")
 
-# --- Models ---
+# -------------------------
+# Pydantic models
+# -------------------------
 class IngestModel(BaseModel):
     key: str
     type: str
     payload: dict
 
-class AuthModel(BaseModel):
-    username: str
-    password: str
-
-# --- Simple JWT auth helpers ---
-def create_access_token(subject: str, expires_in: int = 3600):
-    payload = {"sub": subject, "exp": int(time.time()) + expires_in}
-    token = jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGO)
-    return token
-
-def verify_token(token: str) -> Optional[str]:
-    # Accept the bypass token or a valid JWT
-    if not token:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="missing token")
-    if token == ADMIN_BYPASS_TOKEN:
-        return ADMIN_USER
-    try:
-        data = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGO])
-        return data.get("sub")
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="token expired")
-    except Exception:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid token")
-
-async def get_current_user(authorization: str = None):
-    # Expect "Bearer <token>"
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Missing Authorization header")
-    if not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Invalid authorization")
-    token = authorization.split(" ", 1)[1]
-    user = verify_token(token)
-    return user
-
-# --- Bot process manager (start/stop) ---
-class BotProcessManager:
-    def __init__(self, cmd: str, workdir: str = "."):
-        self.cmd = cmd
-        self.workdir = workdir
-        self.proc: Optional[subprocess.Popen] = None
-        self._stdout_thread: Optional[threading.Thread] = None
-        self._stderr_thread: Optional[threading.Thread] = None
-
-    def is_running(self):
-        return self.proc is not None and self.proc.poll() is None
-
-    def _start_stream_reader(self, stream, label: str):
-        def _reader():
-            try:
-                for line in iter(stream.readline, ""):
-                    if not line:
-                        break
-                    ln = line.rstrip()
-                    logger.info(f"[bot {label}] {ln}")
-                    # persist & broadcast
-                    try:
-                        persist_event("log", {"level": "INFO", "message": ln, "source": "bot"})
-                        # broadcast bot_log asynchronously
-                        def _b():
-                            try:
-                                import asyncio
-                                coro = manager.broadcast({"type":"bot_log","payload":{"message":ln},"ts":int(time.time())})
-                                asyncio.run(coro)
-                            except Exception:
-                                pass
-                        threading.Thread(target=_b, daemon=True).start()
-                    except Exception:
-                        logger.exception("failed handling bot output line")
-            except Exception:
-                pass
-        t = threading.Thread(target=_reader, daemon=True)
-        t.start()
-        return t
-
-    def start(self):
-        if self.is_running():
-            return False, "already running"
-
-        # Use BOT_CMD override defined above (hardcoded)
-        cmd_to_use = BOT_CMD
-
-        try:
-            parts = shlex.split(cmd_to_use)
-        except Exception:
-            parts = cmd_to_use.split()
-
-        # Ensure python interpreter used if a .py script is present
-        if parts and parts[0].lower().endswith(".py"):
-            cmd_list = [sys.executable] + parts
-        else:
-            if any(p.lower().endswith(".py") for p in parts) and not parts[0].lower().endswith(("python", "python.exe")):
-                cmd_list = [sys.executable] + parts
-            else:
-                cmd_list = parts
-
-        logger.info(f"Starting bot: {cmd_list} in {self.workdir}")
-        try:
-            self.proc = subprocess.Popen(
-                cmd_list,
-                cwd=self.workdir,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                bufsize=1,
-                universal_newlines=True
-            )
-        except FileNotFoundError as e:
-            logger.exception("Bot start failed - file not found")
-            return False, f"file not found: {e}"
-        except Exception as e:
-            logger.exception("Bot start failed")
-            return False, str(e)
-
-        # Attach readers
-        try:
-            if self.proc.stdout:
-                self._stdout_thread = self._start_stream_reader(self.proc.stdout, "out")
-            if self.proc.stderr:
-                self._stderr_thread = self._start_stream_reader(self.proc.stderr, "err")
-        except Exception:
-            logger.exception("Failed to attach stdout/stderr readers")
-
-        return True, "started"
-
-    def stop(self):
-        if not self.is_running():
-            return False, "not running"
-        logger.info("Terminating bot process")
-        try:
-            self.proc.terminate()
-            try:
-                self.proc.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                self.proc.kill()
-                self.proc.wait(timeout=5)
-        except Exception:
-            logger.exception("Failed to stop process")
-        finally:
-            self.proc = None
-        return True, "stopped"
-
-    def get_info(self):
-        return {"running": self.is_running(), "pid": self.proc.pid if self.proc else None}
-
-# initialize manager with defaults (hardcoded)
-bot_manager = BotProcessManager(BOT_CMD, BOT_WORKDIR)
-
-# --- API endpoints ---
+# -------------------------
+# API: ingest (bot -> dashboard)
+# -------------------------
 @app.post("/ingest")
 async def ingest(item: IngestModel):
-    # Bot connector authenticates with DASHBOARD_KEY
+    """
+    Bot posts events here:
+    {
+      "key": "<DASHBOARD_KEY>",
+      "type": "log" | "trade_open" | "trade_close" | "analysis" | "error" | "mt5_status" | "balance" | "equity" | ...,
+      "payload": {...}
+    }
+    """
     if item.key != DASHBOARD_KEY:
         raise HTTPException(status_code=401, detail="invalid key")
     try:
@@ -373,60 +227,47 @@ async def ingest(item: IngestModel):
         logger.exception("persist failed")
         raise HTTPException(status_code=500, detail=str(e))
 
-    # broadcast to websockets
+    # broadcast to websockets (clients will receive in real-time)
     try:
         await manager.broadcast({"type": item.type, "payload": item.payload, "ts": int(time.time())})
     except Exception:
         logger.exception("broadcast failed")
+
     return JSONResponse({"status": "ok"})
 
-@app.post("/auth/login")
-async def login(creds: AuthModel):
-    if creds.username != ADMIN_USER or creds.password != ADMIN_PASS:
-        raise HTTPException(status_code=401, detail="invalid credentials")
-    token = create_access_token(creds.username, expires_in=60*60*8)  # 8 hours
-    return {"access_token": token, "token_type": "bearer"}
-
+# -------------------------
+# Disabled control endpoints (we run passive ingest mode)
+# -------------------------
 @app.post("/control/start")
-async def control_start(authorization: str = Depends(lambda request=None: (request := request) and request.headers.get("Authorization"))):
-    # require valid user (JWT or bypass token)
-    user = await get_current_user(authorization)
-    ok, msg = bot_manager.start()
-    # broadcast status
-    try:
-        await manager.broadcast({"type": "control", "payload": {"action": "start", "ok": ok, "msg": msg, "user": user}, "ts": int(time.time())})
-    except Exception:
-        logger.exception("broadcast failed")
-    return {"ok": ok, "msg": msg}
+async def control_start():
+    # Start/Stop are intentionally disabled in passive mode.
+    return JSONResponse({"ok": False, "msg": "start/stop disabled in passive ingest mode; start your bot manually"})
 
 @app.post("/control/stop")
-async def control_stop(authorization: str = Depends(lambda request=None: (request := request) and request.headers.get("Authorization"))):
-    user = await get_current_user(authorization)
-    ok, msg = bot_manager.stop()
-    try:
-        await manager.broadcast({"type": "control", "payload": {"action": "stop", "ok": ok, "msg": msg, "user": user}, "ts": int(time.time())})
-    except Exception:
-        logger.exception("broadcast failed")
-    return {"ok": ok, "msg": msg}
+async def control_stop():
+    return JSONResponse({"ok": False, "msg": "start/stop disabled in passive ingest mode; stop your bot manually"})
 
+# -------------------------
+# Query endpoints used by frontend
+# -------------------------
 @app.get("/status")
 async def status():
-    # basic stats + bot status + last event
+    """
+    Returns simple dashboard status.
+    bot running is derived from last_event_ts (if a recent event was received).
+    """
     cur.execute("SELECT COUNT(*) FROM events")
     total = cur.fetchone()[0]
-    bot_info = bot_manager.get_info()
-    last_event = last_event_ts
-    # fetch latest mt5 status values
-    cur.execute("SELECT key,value,ts FROM mt5_status ORDER BY id DESC")
-    rows = cur.fetchall()
-    mt5 = {}
-    for r in rows:
-        try:
-            val = json.loads(r[1])
-        except Exception:
-            val = r[1]
-        mt5[r[0]] = {"value": val, "ts": r[2]}
-    return {"status": "ok", "events": total, "bot": bot_info, "last_event": last_event, "mt5": mt5}
+    # Consider bot "running" if last event was within 30 seconds
+    running = False
+    if last_event_ts and (time.time() - last_event_ts) < 30:
+        running = True
+    return {
+        "status": "ok",
+        "events": total,
+        "bot": {"running": running, "last_event_ts": last_event_ts},
+        "last_event": last_event_ts
+    }
 
 @app.get("/events")
 async def events(limit: int = 50):
@@ -447,12 +288,37 @@ async def trades(limit: int = 100):
     rows = cur.fetchall()
     return [{"ts": r[0], "symbol": r[1], "side": r[2], "lots": r[3], "open_price": r[4], "close_price": r[5], "profit": r[6], "status": r[7], "meta": json.loads(r[8] or "{}")} for r in rows]
 
+@app.get("/analysis")
+async def analysis(limit: int = 200):
+    cur.execute("SELECT ts,symbol,technical,fundamental,sentiment,final_score,meta FROM analyses ORDER BY id DESC LIMIT ?", (limit,))
+    rows = cur.fetchall()
+    return [{"ts": r[0], "symbol": r[1], "technical": r[2], "fundamental": r[3], "sentiment": r[4], "final_score": r[5], "meta": json.loads(r[6] or "{}")} for r in rows]
+
+@app.get("/mt5")
+async def mt5_status():
+    cur.execute("SELECT id,ts,key,value FROM mt5_status ORDER BY id DESC LIMIT 50")
+    rows = cur.fetchall()
+    out = {}
+    for r in rows:
+        k = r[2]
+        try:
+            v = json.loads(r[3])
+        except Exception:
+            v = r[3]
+        # only keep latest per key
+        if k not in out:
+            out[k] = {"value": v, "ts": r[1]}
+    return out
+
+# -------------------------
+# WebSocket endpoint (frontend connects here)
+# -------------------------
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     try:
         while True:
-            # keepalive - the client may send pings or messages
+            # keepalive: the client may send pings
             try:
                 _ = await websocket.receive_text()
             except WebSocketDisconnect:
@@ -460,10 +326,12 @@ async def websocket_endpoint(websocket: WebSocket):
     finally:
         manager.disconnect(websocket)
 
+# -------------------------
+# Serve frontend index or basic health
+# -------------------------
 @app.get("/")
 async def index():
-    # If frontend index exists, serve it; otherwise return a simple JSON health message
     index_path = os.path.join(FRONTEND_DIR, "index.html")
     if os.path.isfile(index_path):
         return FileResponse(index_path)
-    return JSONResponse({"message": "Void Beast Dashboard API is running", "status": "ok"})
+    return JSONResponse({"message": "Void Beast Dashboard (passive ingest) running", "status": "ok"})
