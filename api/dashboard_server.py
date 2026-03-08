@@ -1,5 +1,6 @@
 # api/dashboard_server.py
 import os
+import sys
 import time
 import json
 import sqlite3
@@ -22,8 +23,17 @@ JWT_SECRET = os.getenv("JWT_SECRET", "supersecret_jwt_key_change_me!")
 JWT_ALGO = "HS256"
 ADMIN_USER = os.getenv("ADMIN_USER", "admin")
 ADMIN_PASS = os.getenv("ADMIN_PASS", "password")  # replace with strong secret in production
-BOT_CMD = os.getenv("BOT_CMD", "python voidx2_0_final_beast_full-1.py")  # shell command used to start bot
-BOT_WORKDIR = os.getenv("BOT_WORKDIR", ".")  # working directory for the bot process
+
+# Determine a sensible default bot path (assumes bot is one level above void_beast_dashboard)
+# __file__ -> .../void_beast_dashboard/api/dashboard_server.py
+# parent x3 -> .../Muc_universe
+_default_parent = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+_default_bot_path = os.path.join(_default_parent, "voidx_beast.py")
+
+# BOT_CMD: by default run the bot with the same Python interpreter being used for the server
+BOT_CMD = os.getenv("BOT_CMD", f"{sys.executable} \"{_default_bot_path}\"")
+# BOT_WORKDIR: default to the Muc_universe parent (so relative imports/files in bot still work)
+BOT_WORKDIR = os.getenv("BOT_WORKDIR", _default_parent)
 
 # --- Logging ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -207,11 +217,72 @@ class BotProcessManager:
     def start(self):
         if self.is_running():
             return False, "already running"
-        # Use shlex.split to handle command string with args safely
-        cmd_list = shlex.split(self.cmd)
+
+        # Build command list; prefer explicit sys.executable if BOT_CMD doesn't include interpreter
+        try:
+            # If BOT_CMD starts with a Python executable reference, keep as-is; otherwise ensure correct interpreter
+            # Example BOT_CMD default is like: "C:\...\python.exe \"C:\...\voidx_beast.py\""
+            cmd_env = os.getenv("BOT_CMD")
+            if cmd_env:
+                cmd_to_use = cmd_env
+            else:
+                cmd_to_use = self.cmd
+
+            # If the command does not reference a python executable and looks like a script path, prefix with sys.executable
+            parts = shlex.split(cmd_to_use)
+            if len(parts) > 0 and parts[0].lower().endswith((".py",)):
+                # first token is a script path — prepend sys.executable
+                cmd_list = [sys.executable] + parts
+            else:
+                cmd_list = shlex.split(cmd_to_use)
+        except Exception:
+            # fallback conservative split
+            cmd_list = shlex.split(self.cmd)
+
         logger.info(f"Starting bot: {cmd_list} in {self.workdir}")
-        self.proc = subprocess.Popen(cmd_list, cwd=self.workdir, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        return True, "started"
+
+        try:
+            self.proc = subprocess.Popen(
+                cmd_list,
+                cwd=self.workdir,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                bufsize=1,
+                universal_newlines=True
+            )
+
+            # Optionally start background readers for stdout/stderr so process doesn't block
+            def _drain_stream(stream, label):
+                try:
+                    for line in stream:
+                        logger.info(f"[bot {label}] {line.rstrip()}")
+                        # Also forward as dashboard 'log' events
+                        try:
+                            persist_event("log", {"level": "INFO", "message": line.rstrip(), "source": "bot"})
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+            # spawn readers
+            try:
+                import threading
+                if self.proc.stdout:
+                    t_out = threading.Thread(target=_drain_stream, args=(self.proc.stdout, "out"), daemon=True)
+                    t_out.start()
+                if self.proc.stderr:
+                    t_err = threading.Thread(target=_drain_stream, args=(self.proc.stderr, "err"), daemon=True)
+                    t_err.start()
+            except Exception:
+                logger.debug("Failed to attach stdout/stderr readers")
+
+            return True, "started"
+        except FileNotFoundError as e:
+            logger.exception("Bot start failed - file not found")
+            return False, f"file not found: {e}"
+        except Exception as e:
+            logger.exception("Bot start failed")
+            return False, str(e)
 
     def stop(self):
         if not self.is_running():
@@ -233,6 +304,7 @@ class BotProcessManager:
     def get_info(self):
         return {"running": self.is_running(), "pid": self.proc.pid if self.proc else None}
 
+# initialize manager with defaults (but it will respect BOT_CMD/BOT_WORKDIR env vars)
 bot_manager = BotProcessManager(BOT_CMD, BOT_WORKDIR)
 
 # --- API endpoints ---
