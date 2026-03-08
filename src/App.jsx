@@ -188,9 +188,11 @@ export default function App() {
 
   // Use two fallback image paths: /void-bg.jpg (public root) and /assets/void-bg.jpg (public/assets/)
   const backgroundStyle = {
+    minHeight: "100vh",
     backgroundImage: "url('/void-bg.jpg'), url('/assets/void-bg.jpg')",
-    backgroundSize: "contain",
+    backgroundSize: "cover",
     backgroundPosition: "center",
+    backgroundRepeat: "no-repeat",
   };
 
   return (
@@ -241,7 +243,7 @@ export default function App() {
                     <li key={i} className="py-1 border-b border-white/5 flex justify-between">
                       <div>
                         <span className="font-semibold mr-2">{t.symbol}</span>
-                        <span className="text-xs text-gray-400">closed</span>
+                      <span className="text-xs text-gray-400">closed</span>
                       </div>
                       <div className={`text-sm ${Number(t.profit) >= 0 ? "text-beast-green" : "text-red-400"}`}>{t.profit ?? 0}</div>
                     </li>
