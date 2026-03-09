@@ -51,7 +51,7 @@ globals()['TRADED_SYMBOLS'] = TRADED_SYMBOLS
 
 def _install_beast_modules():
     import types, sys
-    code = "\n# beast_helpers - production-grade helpers\nimport logging, json, os, time\nfrom datetime import datetime, timezone\n\nlogger = logging.getLogger("Ultra_instinct")
+    code = """\n# beast_helpers - production-grade helpers\nimport logging, json, os, time\nfrom datetime import datetime, timezone\n\nlogger = logging.getLogger("Ultra_instinct")"""
 
 # --- BEGIN: Increased verbosity for beast/voidx systems (injected) ---
 # Set debug level for core beast modules so you get a per-system breakdown in logs.
