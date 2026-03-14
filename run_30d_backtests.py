@@ -3,7 +3,7 @@ import importlib.util, sys, logging, io, traceback
 from pathlib import Path
 
 # === MODIFY THIS PATH IF NEEDED ===
-UPGRADED_FILE = r"/path/to/KYOTO_INFERNO_V16_fixed-5_upgraded.py"
+UPGRADED_FILE = r"C:\Users\Administrator\OneDrive\Desktop\Muc_universe\KYOTO_INFERNO_V16_fixed-5_upgraded.py"
 
 # load module from file path
 spec = importlib.util.spec_from_file_location("upgraded_bot", UPGRADED_FILE)
