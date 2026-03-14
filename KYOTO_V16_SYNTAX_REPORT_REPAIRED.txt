@@ -1,0 +1,5 @@
+ast.parse -> ok
+compile -> ok
+py_compile -> ok
+import_exec_module -> ok
+exec_isolated -> ok
