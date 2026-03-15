@@ -1,7 +1,10 @@
-# sample_signals_fix.py
-# Robust version: fetches recent MT5 bars in chunks and computes adapter signals historically.
+# sample_signals.py
+# Robust signal sampler for your KYOTO bot (fixed truth-check error).
+# Fetches recent MT5 bars in chunks, computes the adapter signal historically,
+# prints statistics and suggests per-symbol thresholds (90th pct of |signal|).
 import math, sys, time
 from pathlib import Path
+
 try:
     import MetaTrader5 as mt5
 except Exception as e:
@@ -12,10 +15,8 @@ except Exception as e:
 SYMBOLS = ["BTCUSD","EURUSD","USDJPY","XAUUSD","USOIL","DXY"]
 TF = mt5.TIMEFRAME_M5
 DAYS = 30
-# target bars = DAYS * (24*60 / 5)
-TARGET_BARS = DAYS * 24 * 12  # 30 days -> 8640
-# Fetch in chunks of at most this many bars per MT5 call (safe default)
-CHUNK = 10000
+TARGET_BARS = DAYS * 24 * 12   # 30 days -> 8640 bars
+CHUNK = 2000                   # safe chunk size for MT5 requests
 
 def resolve(sym):
     try:
@@ -33,24 +34,31 @@ def resolve(sym):
 def fetch_recent_bars(sym, tf, total_needed):
     bars = []
     pos = 0
-    # try a couple of times to fetch until exhausted or we collect total_needed
-    while len(bars) < total_needed:
+    tries = 0
+    # fetch until we have enough or nothing more
+    while len(bars) < total_needed and tries < 20:
         to_request = min(CHUNK, total_needed - len(bars))
         try:
             batch = mt5.copy_rates_from_pos(sym, tf, pos, to_request)
         except Exception as e:
             print("  MT5 copy_rates_from_pos raised:", e)
             break
-        if not batch or len(batch) == 0:
-            # nothing more available
+        # explicit checks to avoid numpy truth ambiguity
+        if batch is None or (hasattr(batch, "__len__") and len(batch) == 0):
+            # nothing more returned
             break
-        # extend and move offset
-        bars.extend(list(batch))
-        pos += len(batch)
-        # small delay to avoid hammering MT5
-        time.sleep(0.05)
-        # safety cap (avoid infinite loops)
-        if pos > 200000:
+        # extend bars list (batch may be numpy structured array)
+        try:
+            bars.extend(list(batch))
+        except Exception:
+            # fallback: try iterating
+            for b in batch:
+                bars.append(b)
+        pos += len(batch) if hasattr(batch, "__len__") else to_request
+        tries += 1
+        time.sleep(0.02)
+        # safety cap
+        if pos >= 200000:
             break
     return bars
 
@@ -71,22 +79,23 @@ def compute_signals_from_bars(bars):
         start_j = max(1, i-50)
         for j in range(start_j, i+1):
             if j == 0: continue
-            high = highs[j]; low = lows[j]; prev_close = closes[j-1]
-            tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+            high = highs[j]; low = lows[j]; prev = closes[j-1]
+            tr = max(high - low, abs(high - prev), abs(low - prev))
             tr_list.append(tr)
         atr_period = min(14, len(tr_list))
         atr = sum(tr_list[-atr_period:]) / atr_period if atr_period > 0 else 0.0
         eps = 1e-9
         raw = (price - sma) / (atr + eps)
         s = math.tanh(raw / 2.0)
-        if s>1.0: s = 1.0
-        if s<-1.0: s = -1.0
+        if s > 1.0: s = 1.0
+        if s < -1.0: s = -1.0
         signals.append(float(s))
     return signals
 
 def summarize(signals):
     import statistics
-    if not signals: return None
+    if not signals:
+        return None
     abs_s = sorted([abs(x) for x in signals])
     n = len(signals)
     mn = min(signals); mx = max(signals)
@@ -94,8 +103,9 @@ def summarize(signals):
     stdev = statistics.pstdev(signals) if n>1 else 0.0
     p50 = statistics.median(signals)
     def pctile(arr, p):
-        if not arr: return 0.0
-        idx = max(0, min(len(arr)-1, int(p*len(arr))-1))
+        if not arr:
+            return 0.0
+        idx = int(max(0, min(len(arr)-1, math.floor(p*len(arr)) - 1)))
         return arr[idx]
     p90 = pctile(abs_s, 0.90)
     p95 = pctile(abs_s, 0.95)
@@ -111,11 +121,10 @@ def run_one(sym):
     if not resolved:
         print("  Could not resolve symbol; ensure Market Watch contains it.")
         return
-    # try fetching in chunks
     print(f"  requesting up to {TARGET_BARS} bars (chunk={CHUNK}) for {resolved} ...")
     bars = fetch_recent_bars(resolved, TF, TARGET_BARS)
-    if not bars or len(bars)==0:
-        print("  MT5 returned no bars or empty. Try opening the chart, 'max bars in history', or smaller SAMPLE_BARS.")
+    if bars is None or len(bars) == 0:
+        print("  MT5 returned no bars or empty. Try opening the chart, increase 'Max bars in history', or reduce TARGET_BARS.")
         return
     print("  bars fetched:", len(bars))
     signals = compute_signals_from_bars(bars)
@@ -135,7 +144,10 @@ def main():
     ok = mt5.initialize()
     print("mt5.initialize() ->", ok, "last_error:", mt5.last_error())
     for s in SYMBOLS:
-        run_one(s)
+        try:
+            run_one(s)
+        except Exception as e:
+            print("  run_one raised:", e)
     mt5.shutdown()
     print("\nDone.")
 
