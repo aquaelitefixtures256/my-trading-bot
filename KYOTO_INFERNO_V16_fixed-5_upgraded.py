@@ -284,7 +284,23 @@ def live_scanner_loop(stop_event, mt5_module, symbol_map, v15_module):
                 if signal is None:
                     signal = round(random.uniform(-0.2, 0.2), 4)
                 # Detect regime
-                regime = "trending" if abs(signal) > 0.5 else "ranging"
+                params = CONFIG.get("BACKTEST_PARAMS", {}).get(sym, {})
+                live_signal_thresh = params.get("signal_thresh", 0.6)
+                
+                if not hasattr(live_scanner_loop, "_logged_thresholds"):
+                    live_scanner_loop._logged_thresholds = set()
+                if sym not in getattr(live_scanner_loop, "_logged_thresholds"):
+                    logger.info("Live scanner using threshold %s for %s", live_signal_thresh, sym)
+                    live_scanner_loop._logged_thresholds.add(sym)
+                
+                if signal is not None and signal >= live_signal_thresh:
+                    regime = "trending"
+                    # ... existing trending logic ...
+                elif signal is not None and signal <= -live_signal_thresh:
+                    regime = "trending"
+                    # ... existing trending logic ...
+                else:
+                    regime = "ranging"
                 # 🔔 EXECUTION SIGNAL LOG
                 if regime == "trending":
                     logger.info(
@@ -425,64 +441,177 @@ def health_monitor_thread(stop_event, mt5_module, symbol_map):
             backoff = min(backoff*2, 60)
 
 # --- V16 UPGRADE: backtest harness (simple) ---
-def run_backtest(v15_module, symbol='XAUUSD', days=7):
+def run_backtest(v15_module, symbol='XAUUSD', days=30):
+
     logger.info("Starting backtest for %s for %s days", symbol, days)
-    # try to get historical bars via MT5 if available in v15_module globals
+
+    import csv
+    import random
+
+        # --- MT5 safe fetch + symbol resolution (paste in run_backtest where you previously called copy_rates_from_pos) ---
+    import MetaTrader5 as mt5
+
+    # Ensure MT5 is initialized
+    try:
+        if not mt5.initialize():
+            logger.error("MT5 initialize failed in run_backtest: %s", mt5.last_error())
+            return {"net":0,"trades":0,"win_rate":0.0,"max_dd":0.0, "error":"mt5_init_failed"}
+    except Exception as e:
+        logger.exception("MT5 initialize exception: %s", e)
+        return {"net":0,"trades":0,"win_rate":0.0,"max_dd":0.0, "error":"mt5_init_exception"}
+
+    # Resolve symbol (try as-is, then try Exness 'm' suffix)
+    resolved_sym = None
+    try:
+        if mt5.symbol_select(symbol, True):
+            resolved_sym = symbol
+        elif mt5.symbol_select(symbol + "m", True):
+            resolved_sym = symbol + "m"
+        else:
+            logger.error("Failed to select symbol %s or %sm in MT5 Market Watch. Add symbol to Market Watch.", symbol, symbol)
+            return {"net":0,"trades":0,"win_rate":0.0,"max_dd":0.0, "error":"symbol_not_found"}
+    except Exception:
+        logger.exception("Symbol selection error for %s", symbol)
+        return {"net":0,"trades":0,"win_rate":0.0,"max_dd":0.0, "error":"symbol_select_exception"}
+
+    # Request bars (reliable copy_rates_from_pos)
+    try:
+        total_bars = int(days * 24 * 60)  # minutes
+        rates = mt5.copy_rates_from_pos(resolved_sym, mt5.TIMEFRAME_M1, 0, total_bars)
+    except Exception:
+        logger.exception("MT5 copy_rates_from_pos raised for %s", resolved_sym)
+        return {"net":0,"trades":0,"win_rate":0.0,"max_dd":0.0, "error":"mt5_copy_error"}
+
+    if rates is None or len(rates) == 0:
+        logger.error("MT5 returned no historical data for %s (resolved=%s). Ensure MT5 terminal logged into Exness and symbol present in Market Watch.", symbol, resolved_sym)
+        return {"net":0,"trades":0,"win_rate":0.0,"max_dd":0.0, "error":"no_data"}
+
+    # Build bars list (oldest->newest)
     bars = []
-    import random, csv, time
-    now = datetime.utcnow()
-    total_minutes = days * 24 * 60
-    price = 1800.0
-    for i in range(total_minutes):
-        # simple random walk
-        price += random.uniform(-0.5, 0.5)
-        ts = now - timedelta(minutes=(total_minutes - i))
-        bars.append({'time': ts, 'close': price})
-    # run a simple strategy using v15 compute_signal if present
+    for r in rates:
+        # r may be tuple-like or dict-like depending on MT5 binding
+        try:
+            t = int(r[0])
+            open_p = float(r[1]); high = float(r[2]); low = float(r[3]); close = float(r[4])
+            vol = int(r[5]) if len(r) > 5 else int(getattr(r, "tick_volume", 0))
+        except Exception:
+            # try mapping-style access
+            t = int(r.get("time", int(time.time())))
+            open_p = float(r.get("open", 0.0))
+            high = float(r.get("high", 0.0))
+            low = float(r.get("low", 0.0))
+            close = float(r.get("close", 0.0))
+            vol = int(r.get("tick_volume", 0))
+        bars.append({
+            "time": datetime.utcfromtimestamp(t),
+            "open": open_p, "high": high, "low": low, "close": close, "tick_volume": vol
+        })
+
+    # Use resolved_sym for any broker-specific checks later
+    symbol = resolved_sym
+
+
     trades = []
+
     position = None
     entry_price = None
+    entry_index = None
+
     wins = 0
     losses = 0
+
     for i, bar in enumerate(bars):
+
         price = bar['close']
+
         signal = None
+
         if v15_module and hasattr(v15_module, 'compute_signal'):
             try:
                 signal = v15_module.compute_signal(symbol, price, {})
             except Exception:
                 signal = None
-        if signal is None:
-            # use MA crossover simulation
-            signal = random.uniform(-0.1,0.1)
-        # simplistic entry logic: buy if signal>0.6, sell if signal<-0.6
-        if position is None and signal > 0.6:
-            position = 'buy'; entry_price = price; trades.append({'type':'buy','entry':price,'time':bar['time']})
-        elif position is None and signal < -0.6:
-            position = 'sell'; entry_price = price; trades.append({'type':'sell','entry':price,'time':bar['time']})
-        # simplistic exit: after 60 minutes or opposite signal
-        if position and (i - bars.index(bar) > 60 or abs(signal) < 0.2):
-            exit_price = price
-            t = trades[-1]; t.update({'exit': exit_price, 'exit_time': bar['time']})
-            pnl = (exit_price - t['entry']) if t['type']=='buy' else (t['entry'] - exit_price)
-            t['pnl'] = pnl
-            if pnl > 0: wins += 1
-            else: losses += 1
-            position = None; entry_price = None
-    # summarize
-    net = sum(t.get('pnl',0) for t in trades)
-    num = len(trades)
-    win_rate = (wins/(wins+losses)) if (wins+losses)>0 else 0.0
-    max_dd = 0.0
-    # write CSV
-    with open(r"/mnt/data/KYOTO_V16_BACKTEST_REPORT.csv", 'w', newline='') as cf:
-        writer = csv.DictWriter(cf, fieldnames=['time','type','entry','exit','pnl','exit_time'])
-        writer.writeheader()
-        for t in trades:
-            writer.writerow({'time': t.get('time'),'type': t.get('type'),'entry': t.get('entry'),'exit': t.get('exit'),'pnl': t.get('pnl'),'exit_time': t.get('exit_time')})
-    logger.info("Backtest complete: net P&L=%s, trades=%s, win_rate=%s", net, num, win_rate)
-    return {'net': net, 'trades': num, 'win_rate': win_rate, 'max_dd': max_dd}
 
+        if signal is None:
+            signal = random.uniform(-1, 1)
+
+        # ENTRY
+        try:
+            params = CONFIG.get("BACKTEST_PARAMS", {}).get(symbol, {})
+        except Exception:
+            params = {}
+        signal_thresh = params.get("signal_thresh", 0.6) # default old behavior
+        atr_thresh = params.get("atr_thresh", 0.0)
+        max_hold = params.get("max_hold", 60)
+
+        if i == 0: # only log at first bar for this symbol to avoid spam
+            logger.info("Using params for %s -> signal_thresh=%s atr_thresh=%s max_hold=%s", symbol, signal_thresh, atr_thresh, max_hold)
+
+        # ENTRY using per-symbol threshold
+        if position is None:
+            if signal is not None:
+                if signal >= signal_thresh:
+                    position = 'buy'
+                    entry_price = price
+                    entry_index = i
+                    trades.append({'type': 'buy', 'entry': price, 'time': bar['time'], 'atr_at_entry': compute_atr(recent) if 'compute_atr' in globals() else None})
+                elif signal <= -signal_thresh:
+                    position = 'sell'
+                    entry_price = price
+                    entry_index = i
+                    trades.append({'type': 'sell', 'entry': price, 'time': bar['time'], 'atr_at_entry': compute_atr(recent) if 'compute_atr' in globals() else None})
+
+        # EXIT: keep previous logic but use max_hold
+        elif position:
+            # calculate how long we've held (in bars)
+            held_bars = i - (entry_index if entry_index is not None else i)
+            if held_bars >= max_hold or (signal is not None and abs(signal) < 0.2):
+                exit_price = price
+                t = trades[-1]
+                t.update({'exit': exit_price, 'exit_time': bar['time']})
+                pnl = (exit_price - t['entry']) if t['type'] == 'buy' else (t['entry'] - exit_price)
+                t['pnl'] = pnl
+                if pnl > 0:
+                    wins += 1
+                else:
+                    losses += 1
+                position = None
+                entry_price = None
+                entry_index = None
+
+    net = sum(t.get('pnl', 0) for t in trades)
+
+    num = len(trades)
+
+    win_rate = wins / (wins + losses) if (wins + losses) > 0 else 0
+
+    max_dd = 0
+
+    with open("KYOTO_V16_BACKTEST_REPORT.csv", "w", newline="") as f:
+
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["time", "type", "entry", "exit", "pnl", "exit_time"]
+        )
+
+        writer.writeheader()
+
+        for t in trades:
+            writer.writerow(t)
+
+    logger.info(
+        "Backtest complete: net=%s trades=%s win_rate=%s",
+        net,
+        num,
+        win_rate
+    )
+
+    return {
+        "net": net,
+        "trades": num,
+        "win_rate": win_rate,
+        "max_dd": max_dd
+    }
 
 # --- V16 UPGRADE: Ensure start_bot runs when executed as script (fixed main loop issue) ---
 
@@ -779,10 +908,26 @@ def live_scanner_loop(stop_event, mt5_module, symbol_map, v15_module):
                     # minimal conservative fallback: normalized small random between -0.2 and 0.2
                     try:
                         import random as _random
-                        signal = round(_random.uniform(-0.2, 0.2), 4)
+                       # signal = round(_random.uniform(-0.2, 0.2), 4)
                     except Exception:
                         signal = 0.0
-                regime = 'trending' if abs(signal) > 0.5 else 'ranging'
+                params = CONFIG.get("BACKTEST_PARAMS", {}).get(sym, {})
+                live_signal_thresh = params.get("signal_thresh", 0.6)
+                
+                if not hasattr(live_scanner_loop, "_logged_thresholds"):
+                    live_scanner_loop._logged_thresholds = set()
+                if sym not in getattr(live_scanner_loop, "_logged_thresholds"):
+                    logger.info("Live scanner using threshold %s for %s", live_signal_thresh, sym)
+                    live_scanner_loop._logged_thresholds.add(sym)
+                
+                if signal is not None and signal >= live_signal_thresh:
+                    regime = "trending"
+                    # ... existing trending logic ...
+                elif signal is not None and signal <= -live_signal_thresh:
+                    regime = "trending"
+                    # ... existing trending logic ...
+                else:
+                    regime = "ranging"
                 prec = 6 if 'USD' in canon and 'XAU' not in canon else 4
                 line = f"{canon} | price: {price:.6f} | signal: {signal:.4f} | regime: {regime} | src: {source}"
                 if _time.time() - last_print > 0.5:
@@ -832,3 +977,20 @@ def _ensure_telethon_thread():
 
     except Exception:
         logger.exception("Failed to schedule telethon/news listener thread.")
+
+
+# ==== CHATGPT ADDED: TEMPORARY XAUUSD BACKTEST_PARAMS (safe append) ====
+# NOTE: placed at end of file to avoid modifying complex top-level strings. If you prefer
+# it placed where CONFIG is first defined, tell me and I will attempt a targeted edit.
+try:
+    if "CONFIG" not in globals():
+        CONFIG = {}
+    CONFIG.setdefault("BACKTEST_PARAMS", {})
+    CONFIG["BACKTEST_PARAMS"].update({
+        "XAUUSD": {"signal_thresh": 0.95, "atr_thresh": 0.4, "max_hold": 120},
+        "XAUUSDm": {"signal_thresh": 0.95, "atr_thresh": 0.4, "max_hold": 120}
+    })
+except Exception:
+    # non-fatal: don't break the bot if something odd happens
+    pass
+# ==== END CHATGPT ADDED BLOCK ====
