@@ -1,51 +1,26 @@
 # xau_walkforward.py
-# Robust walk-forward runner for XAU: tries bot.run_backtest() and falls back to a local backtester.
+# Robust per-window walk-forward for XAU (fixed fetch-chunk behavior)
 # Usage: python xau_walkforward.py
-
-import importlib.util, sys, traceback, math, logging
+import importlib.util, sys, traceback, math, time
 from pathlib import Path
 
-# CONFIG
-UPGRADED_FILE = "KYOTO_INFERNO_V16_fixed-5_upgraded.py"  # adjust if your filename differs
+UPGRADED_FILE = "KYOTO_INFERNO_V16_fixed-5_upgraded.py"  # adjust if needed
 NUM_WINDOWS = 6
 WINDOW_DAYS = 30
 STEP_DAYS = 15
 TF_MINUTES = 1  # M1 timeframe
-MT5_CHUNK_SAFE_LIMIT = 200000  # safety cap for fetch size (prevent huge requests)
+PER_WINDOW_FETCH = WINDOW_DAYS * 24 * 60  # bars per window
 
-# ---- helpers ----
 def safe_import_bot(path):
     spec = importlib.util.spec_from_file_location("bot_mod", path)
     bot = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(bot)
     return bot
 
-def minutes(n_days):
-    return n_days * 24 * 60
+def minutes(days):
+    return int(days * 24 * 60)
 
-def print_banner(msg):
-    print("\n" + ("="*10) + " " + msg + " " + ("="*10))
-
-# Local ATR helper: expects bars list of dict-like with keys 'high','low','close'
-def compute_atr(bars, period=14):
-    if not bars or len(bars) < period+1:
-        return 0.0
-    trs = []
-    for i in range(1, len(bars)):
-        high = float(bars[i]['high'])
-        low = float(bars[i]['low'])
-        prev_close = float(bars[i-1]['close'])
-        tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
-        trs.append(tr)
-    # simple SMA ATR on last `period` elements of trs
-    if len(trs) < period:
-        period = len(trs)
-    atr = sum(trs[-period:]) / period if period>0 else 0.0
-    return float(atr)
-
-# Convert mt5 rates (tuples) to dicts consistent with keys used here
 def rates_to_bars(rates):
-    # MT5 rates tuple format: (time, open, high, low, close, tick_volume, spread, real_volume)
     bars = []
     for r in rates:
         bars.append({
@@ -60,16 +35,48 @@ def rates_to_bars(rates):
         })
     return bars
 
-# Simple local backtest that mirrors the bot's simple entry/exit logic
-def local_backtest(mt5, v15_module, symbol, params, window_bars):
-    # window_bars: list of bars dict (oldest -> newest)
+def detect_and_normalize_order(bars):
+    # returns bars ordered oldest -> newest
+    if not bars:
+        return bars
+    if bars[0]['time'] <= bars[-1]['time']:
+        return bars
+    return list(reversed(bars))
+
+def fetch_window_mt5(mt5, symbol_candidate, start_pos, count):
+    # ask MT5 for 'count' bars starting at position 'start_pos'
+    try:
+        rates = mt5.copy_rates_from_pos(symbol_candidate, mt5.TIMEFRAME_M1, int(start_pos), int(count))
+    except Exception as e:
+        return None, f"copy_rates_from_pos exception: {e}"
+    if rates is None:
+        return None, None
+    bars = rates_to_bars(rates)
+    bars = detect_and_normalize_order(bars)
+    return bars, None
+
+# a simple ATR computation used by local backtest
+def compute_atr(bars, period=14):
+    if not bars or len(bars) < period+1:
+        return 0.0
+    trs = []
+    for i in range(1, len(bars)):
+        high = bars[i]['high']
+        low = bars[i]['low']
+        prev = bars[i-1]['close']
+        tr = max(high-low, abs(high-prev), abs(low-prev))
+        trs.append(tr)
+    if len(trs) < period:
+        period = len(trs)
+    return sum(trs[-period:]) / period if period>0 else 0.0
+
+def local_backtest(v15, symbol, params, window_bars):
+    # Minimal deterministic backtest: mirrors your current logic (signal_thresh, ATR SL/TP, max_hold)
     trades = []
     position = None
     entry_price = None
     entry_idx = None
-    wins = 0
-    losses = 0
-
+    wins = losses = 0
     signal_thresh = float(params.get("signal_thresh", 0.6))
     sl_atr_mult = float(params.get("sl_atr_mult", 1.2))
     tp_atr_mult = float(params.get("tp_atr_mult", 2.5))
@@ -78,220 +85,185 @@ def local_backtest(mt5, v15_module, symbol, params, window_bars):
     if max_loss_abs is not None:
         max_loss_abs = float(max_loss_abs)
 
-    bars_len = len(window_bars)
-    for i in range(bars_len):
-        price = float(window_bars[i]['close'])
+    for i, bar in enumerate(window_bars):
+        price = float(bar['close'])
+        # compute signal
         signal = None
-        # try v15 signal
         try:
-            if v15_module and hasattr(v15_module, "compute_signal"):
-                signal = v15_module.compute_signal(symbol, price, {})
+            if v15 and hasattr(v15, "compute_signal"):
+                signal = v15.compute_signal(symbol, price, {})
         except Exception:
             signal = None
         if signal is None:
-            # fallback conservative random-ish small signal if needed (but keep deterministic 0)
             signal = 0.0
 
-        # entry logic
         if position is None:
             if signal >= signal_thresh:
-                position = "buy"
-                entry_price = price
-                entry_idx = i
-                # compute ATR at entry
-                atr = compute_atr(window_bars[max(0, i-30):i+1])
-                sl_amt = atr * sl_atr_mult if atr>0 else None
-                tp_amt = atr * tp_atr_mult if atr>0 else None
-                # compute SL/TP absolute price level
-                sl_price = (entry_price - sl_amt) if sl_amt is not None else None
-                tp_price = (entry_price + tp_amt) if tp_amt is not None else None
-                # enforce absolute max loss cap (distance)
+                position = 'buy'
+                entry_price = price; entry_idx = i
+                atr = compute_atr(window_bars[max(0, i-50):i+1])
+                sl_amt = atr*sl_atr_mult if atr>0 else None
+                tp_amt = atr*tp_atr_mult if atr>0 else None
+                sl_price = (entry_price - sl_amt) if sl_amt else None
+                tp_price = (entry_price + tp_amt) if tp_amt else None
                 if max_loss_abs is not None and sl_price is not None:
-                    abs_cap = entry_price - max_loss_abs
-                    # choose safer (closer to entry) price
-                    sl_price = max(sl_price, abs_cap)
-                trades.append({'type':'buy', 'entry': entry_price, 'entry_idx': entry_idx, 'sl_price': sl_price, 'tp_price': tp_price})
+                    sl_price = max(sl_price, entry_price - max_loss_abs)
+                trades.append({'type':'buy','entry':entry_price,'entry_idx':i,'sl_price':sl_price,'tp_price':tp_price})
             elif signal <= -signal_thresh:
-                position = "sell"
-                entry_price = price
-                entry_idx = i
-                atr = compute_atr(window_bars[max(0, i-30):i+1])
-                sl_amt = atr * sl_atr_mult if atr>0 else None
-                tp_amt = atr * tp_atr_mult if atr>0 else None
-                sl_price = (entry_price + sl_amt) if sl_amt is not None else None
-                tp_price = (entry_price - tp_amt) if tp_amt is not None else None
+                position = 'sell'
+                entry_price = price; entry_idx = i
+                atr = compute_atr(window_bars[max(0, i-50):i+1])
+                sl_amt = atr*sl_atr_mult if atr>0 else None
+                tp_amt = atr*tp_atr_mult if atr>0 else None
+                sl_price = (entry_price + sl_amt) if sl_amt else None
+                tp_price = (entry_price - tp_amt) if tp_amt else None
                 if max_loss_abs is not None and sl_price is not None:
-                    abs_cap = entry_price + max_loss_abs
-                    sl_price = min(sl_price, abs_cap)
-                trades.append({'type':'sell', 'entry': entry_price, 'entry_idx': entry_idx, 'sl_price': sl_price, 'tp_price': tp_price})
+                    sl_price = min(sl_price, entry_price + max_loss_abs)
+                trades.append({'type':'sell','entry':entry_price,'entry_idx':i,'sl_price':sl_price,'tp_price':tp_price})
         else:
-            # position exists -> check exit conditions
-            held = i - entry_idx
-            cur_bar = window_bars[i]
-            exit_now = False
-            exit_reason = "timeout"
-            exit_price = price
-            # check TP/SL if available
+            # check exit conditions
+            last = trades[-1]
+            held = i - last['entry_idx']
             last_price = price
-            # for buys
-            last_entry = trades[-1]
-            if position == 'buy':
-                slp = last_entry.get('sl_price', None)
-                tpp = last_entry.get('tp_price', None)
-                # if sl or tp triggered by current close
-                if slp is not None and last_price <= slp:
-                    exit_now = True; exit_reason = "sl"
-                    exit_price = slp
-                elif tpp is not None and last_price >= tpp:
-                    exit_now = True; exit_reason = "tp"
-                    exit_price = tpp
+            exit_now = False; exit_price = last_price; reason = 'timeout'
+            if last['type']=='buy':
+                if last.get('sl_price') is not None and last_price <= last['sl_price']:
+                    exit_now=True; exit_price = last['sl_price']; reason='sl'
+                elif last.get('tp_price') is not None and last_price >= last['tp_price']:
+                    exit_now=True; exit_price = last['tp_price']; reason='tp'
             else:
-                slp = last_entry.get('sl_price', None)
-                tpp = last_entry.get('tp_price', None)
-                if slp is not None and last_price >= slp:
-                    exit_now = True; exit_reason = "sl"
-                    exit_price = slp
-                elif tpp is not None and last_price <= tpp:
-                    exit_now = True; exit_reason = "tp"
-                    exit_price = tpp
-            # timeout / opposite signal
+                if last.get('sl_price') is not None and last_price >= last['sl_price']:
+                    exit_now=True; exit_price = last['sl_price']; reason='sl'
+                elif last.get('tp_price') is not None and last_price <= last['tp_price']:
+                    exit_now=True; exit_price = last['tp_price']; reason='tp'
             if not exit_now:
                 if held >= max_hold:
-                    exit_now = True; exit_reason = "max_hold"
-                    exit_price = last_price
+                    exit_now=True; exit_price = last_price; reason='max_hold'
                 else:
-                    # if opposite strong signal, exit
-                    if position == 'buy' and signal <= -0.2:
-                        exit_now = True; exit_reason = "opp_signal"; exit_price = last_price
-                    elif position == 'sell' and signal >= 0.2:
-                        exit_now = True; exit_reason = "opp_signal"; exit_price = last_price
-
+                    # opposite signal forced exit
+                    if last['type']=='buy' and signal <= -0.2:
+                        exit_now=True; exit_price=last_price; reason='opp_signal'
+                    if last['type']=='sell' and signal >= 0.2:
+                        exit_now=True; exit_price=last_price; reason='opp_signal'
             if exit_now:
-                t = trades[-1]
-                t['exit_idx'] = i
-                t['exit'] = float(exit_price)
-                t['pnl'] = (t['exit'] - t['entry']) if t['type']=='buy' else (t['entry'] - t['exit'])
-                t['exit_reason'] = exit_reason
-                # count
-                if t['pnl'] > 0: wins += 1
-                else: losses += 1
+                last['exit_idx'] = i
+                last['exit'] = float(exit_price)
+                last['pnl'] = (last['exit']-last['entry']) if last['type']=='buy' else (last['entry']-last['exit'])
+                last['exit_reason'] = reason
+                if last['pnl']>0: wins+=1
+                else: losses+=1
                 position = None
-                entry_price = None
-                entry_idx = None
 
-    # finalize: if open position at end, close at last bar
+    # close open
     if position is not None:
-        t = trades[-1]
+        last = trades[-1]
         last_price = float(window_bars[-1]['close'])
-        t['exit_idx'] = bars_len-1
-        t['exit'] = last_price
-        t['pnl'] = (t['exit'] - t['entry']) if t['type']=='buy' else (t['entry'] - t['exit'])
-        t['exit_reason'] = 'eod'
-        if t['pnl']>0: wins+=1
+        last['exit_idx'] = len(window_bars)-1
+        last['exit'] = last_price
+        last['pnl'] = (last['exit']-last['entry']) if last['type']=='buy' else (last['entry']-last['exit'])
+        last['exit_reason'] = 'eod'
+        if last['pnl']>0: wins+=1
         else: losses+=1
 
     net = sum(t.get('pnl',0.0) for t in trades)
     return {'net': net, 'trades': len(trades), 'wins': wins, 'losses': losses, 'trades_list': trades}
 
-# ---- main ----
 def main():
-    print_banner("XAU Walkforward runner (robust)")
-    # load bot
+    print("========== XAU Walkforward runner (fixed-chunk) ==========")
     bot_path = Path(UPGRADED_FILE)
     if not bot_path.exists():
-        print("Bot file not found:", UPGRADED_FILE)
-        sys.exit(1)
-
+        print("Bot file not found:", UPGRADED_FILE); sys.exit(1)
     bot = safe_import_bot(str(bot_path))
-    # load v15
     try:
         v15 = bot.load_v15_module()
+        print("v15 loaded:", getattr(v15, "__name__", str(type(v15))))
     except Exception:
         v15 = None
+        print("v15 load failed or not present; continuing without it.")
 
-    # try to call official run_backtest first (safe wrapper)
-    for w in range(NUM_WINDOWS):
-        pass  # we'll attempt aggregated below
-
-    print("Attempting to call bot.run_backtest() for a single sample to test compatibility...")
+    # try bot.run_backtest once (if it works fine we still use fallback per-window fetch below)
     try:
-        # This may fail for reasons seen earlier; we run it once just to know
-        test = bot.run_backtest(v15, symbol="XAUUSD", days=1)
-        print("bot.run_backtest() seems callable (sample returned):", test)
-    except Exception as e:
-        print("bot.run_backtest() failed (OK, will use fallback). Error:")
+        print("Testing bot.run_backtest(...) call (one-day sample)")
+        sample = bot.run_backtest(v15, symbol="XAUUSD", days=1)
+        print("bot.run_backtest() returned:", sample)
+    except Exception:
+        print("bot.run_backtest() failed (OK) — will use MT5 fallback per-window.")
         traceback.print_exc()
 
-    # FALLBACK: local walk-forward using MT5 + v15 signals
+    # mt5 init
     try:
         import MetaTrader5 as mt5
     except Exception as e:
-        print("Failed to import MetaTrader5 - required for fallback backtest:", e)
-        sys.exit(1)
+        print("MetaTrader5 import error:", e); sys.exit(1)
 
     print("Initializing MT5...")
     if not mt5.initialize():
-        print("mt5.initialize() -> False, last_error:", mt5.last_error())
-        sys.exit(1)
-    else:
-        print("mt5.initialize() -> True last_error:", mt5.last_error())
+        print("mt5.initialize() failed, last_error:", mt5.last_error()); sys.exit(1)
+    print("mt5.initialize() -> True last_error:", mt5.last_error())
 
-    # resolve symbol with bot symbol_map or append 'm' if Exness uses 'm' suffix
-    watch = bot.CONFIG.get("WATCH_SYMBOLS", []) if hasattr(bot, "CONFIG") else []
+    # resolve candidate symbol names
     sym = "XAUUSD"
-    # try mapping
     symbol_map = bot.CONFIG.get("SYMBOL_MAP", {}) if hasattr(bot, "CONFIG") else {}
-    resolved = symbol_map.get(sym, sym + "m")  # prefer mapping, else append m
-    print("Resolved XAU symbol for MT5:", resolved)
+    candidates = []
+    # from map
+    mapped = symbol_map.get(sym)
+    if mapped:
+        candidates.append(mapped)
+    # common variations
+    candidates.extend([sym + "m", sym, "XAUUSDm", "XAUUSD"])
+    # dedupe while preserving order
+    seen = set(); unique = []
+    for c in candidates:
+        if not c: continue
+        if c in seen: continue
+        seen.add(c); unique.append(c)
+    candidates = unique
+    print("Symbol candidates for XAU:", candidates)
 
-    # compute required total bars to fetch
+    # choose the first candidate that is present in MT5.symbols_get()
+    resolved = None
+    for c in candidates:
+        try:
+            si = mt5.symbol_info(c)
+            if si is not None:
+                resolved = c
+                break
+        except Exception:
+            continue
+    if resolved is None:
+        print("Could not resolve any candidate symbol in MT5. Ensure symbol is added to Market Watch and the name is exact.")
+        mt5.shutdown(); sys.exit(1)
+    print("Resolved symbol for MT5:", resolved)
+
     window_minutes = minutes(WINDOW_DAYS)
     step_minutes = minutes(STEP_DAYS)
-    needed_minutes = window_minutes + (NUM_WINDOWS-1) * step_minutes
-    if needed_minutes > MT5_CHUNK_SAFE_LIMIT:
-        print("Requested many bars; capping to", MT5_CHUNK_SAFE_LIMIT)
-        needed_minutes = MT5_CHUNK_SAFE_LIMIT
 
-    print(f"Requesting {needed_minutes} minutes ({needed_minutes//1440} days approx) of M1 bars for {resolved} ...")
-    rates = mt5.copy_rates_from_pos(resolved, mt5.TIMEFRAME_M1, 0, int(needed_minutes))
-    if rates is None or len(rates) == 0:
-        print("MT5 returned no bars. Ensure symbol is in Market Watch and MT5 terminal is running and that the symbol name is correct.")
-        mt5.shutdown()
-        sys.exit(1)
-
-    bars = rates_to_bars(rates)  # oldest -> newest (assumption consistent with MT5)
-    print("Fetched bars:", len(bars))
-
-    params = bot.CONFIG.get("BACKTEST_PARAMS", {}).get("XAUUSD", {})
-    print("Using BACKTEST_PARAMS for XAUUSD (fallback):", params)
-
-    wf_results = []
-    for i in range(NUM_WINDOWS):
-        # slice window i: older windows have larger negative start index
-        start = - (window_minutes + i * step_minutes)
-        end = None if (i == 0) else - (i * step_minutes)
-        if start == 0:
-            window_bars = bars[:end] if end else bars[:]
-        else:
-            if end is None:
-                window_bars = bars[start:]
-            else:
-                window_bars = bars[start:end]
-        # safety: if window_bars shorter than window_minutes, skip
-        if len(window_bars) < window_minutes:
-            print(f"Window {i+1}: insufficient bars ({len(window_bars)} < {window_minutes}), skipping")
-            wf_results.append((i, None))
+    results = []
+    for w in range(NUM_WINDOWS):
+        start_pos = w * step_minutes
+        count = window_minutes
+        print("="*8, f"Window {w+1}/{NUM_WINDOWS}", "="*8)
+        print(f"Requesting window bars for {resolved}: start_pos={start_pos} count={count} ...")
+        bars, err = fetch_window_mt5(mt5, resolved, start_pos, count)
+        if err:
+            print("Fetch error:", err)
+            results.append((w, None))
             continue
-
-        print_banner(f"Window {i+1}/{NUM_WINDOWS} (len={len(window_bars)} bars) -> running local backtest")
-        res = local_backtest(mt5, v15, sym, params, window_bars)
-        print("Result:", res['net'], "trades:", res['trades'], "wins:", res['wins'], "losses:", res['losses'])
-        wf_results.append((i, res))
+        if not bars or len(bars) < count:
+            print(f"Warning: got {0 if not bars else len(bars)} bars (expected {count}). Try increasing Market Watch retention or use smaller windows.")
+            results.append((w, None))
+            continue
+        print(f"Window {w+1}: fetched {len(bars)} bars; running local backtest...")
+        params = bot.CONFIG.get("BACKTEST_PARAMS", {}).get("XAUUSD", {})
+        res = local_backtest(v15, "XAUUSD", params, bars)
+        print("Result net=", res['net'], "trades=", res['trades'], "wins=", res['wins'], "losses=", res['losses'])
+        results.append((w, res))
+        time.sleep(0.2)
 
     mt5.shutdown()
-    print_banner("WALK-FORWARD SUMMARY")
-    for i, r in wf_results:
-        print("Window", i+1, "->", r)
+    print("\nWALK-FORWARD SUMMARY:")
+    for w, r in results:
+        print("Window", w+1, "->", r)
     print("Done.")
 
 if __name__ == "__main__":
