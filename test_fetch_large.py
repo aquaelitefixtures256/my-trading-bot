@@ -37,7 +37,8 @@ def fetch_m1_bars_mt5(mt5_module, symbol, minutes_needed, chunk_size=10000, max_
                 rates = mt5_module.copy_rates_from_pos(symbol, mt5_module.TIMEFRAME_M1, fetched_total, to_request)
             except Exception:
                 rates = None
-            if rates:
+            # <-- robust check to avoid "ambiguous truth value" for numpy arrays
+            if rates is not None and len(rates) > 0:
                 bars.extend(rates)
                 got = len(rates)
                 fetched_total += got
@@ -79,6 +80,8 @@ def main():
         pprint.pprint(bars[:2])
         print("Sample (last 2):")
         pprint.pprint(bars[-2:])
+    else:
+        print("No bars returned. If 0, try: Market Watch -> Show All, open a 1m chart for XAUUSDm and scroll back, then rerun.")
     mt5.shutdown()
     print("MT5 shutdown.")
 
