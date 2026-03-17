@@ -24,7 +24,7 @@ from datetime import datetime, timedelta
 BOT_FILE = "KYOTO_INFERNO_V16_fixed-5_upgraded.py"
 SYMBOLS = ["BTCUSD", "EURUSD", "USDJPY", "USOIL", "DXY"]  # we removed XAU per your request
 TIMEFRAME = "M1"
-RUN_HOURS = 24
+RUN_HOURS = 7
 LOOP_DELAY = 60  # seconds between iterations (M1)
 
 # User-specified starting balance (you indicated $30)
