@@ -341,19 +341,68 @@ def main():
                     logging.debug("ATR=0 for %s; skipping", resolved)
                     continue
 
-                # compute signal
+                # ----- compute signal (robust: try v15 and bot, try sym and resolved) -----
                 sig = None
                 try:
-                    if v15 is not None and hasattr(v15, "compute_signal"):
-                        sig = v15.compute_signal(sym, price, {"bars": [{"time": int(r[0]), "open": float(r[1]), "high": float(r[2]), "low": float(r[3]), "close": float(r[4])} for r in (bars or [])]})
-                    elif hasattr(bot, "compute_signal"):
-                        sig = bot.compute_signal(sym, price, {"bars": [{"time": int(r[0]), "open": float(r[1]), "high": float(r[2]), "low": float(r[3]), "close": float(r[4])} for r in (bars or [])]})
-                    else:
-                        logging.warning("No compute_signal for %s", sym)
+                    # build normalized bars context once
+                    bars_ctx = []
+                    for r in (bars or []):
+                        try:
+                            bars_ctx.append({
+                                "time": int(r[0]),
+                                "open": float(r[1]),
+                                "high": float(r[2]),
+                                "low": float(r[3]),
+                                "close": float(r[4])
+                            })
+                        except Exception:
+                            # fallback: skip malformed row
+                            continue
+
+                    tried_methods = []
+                    # try v15 module first, then bot module
+                    for module_name, module_obj in (("v15", v15), ("bot", bot)):
+                        if module_obj is None:
+                            continue
+                        if not hasattr(module_obj, "compute_signal"):
+                            tried_methods.append(f"{module_name}:no_compute_signal")
+                            continue
+                        for symname in (sym, resolved):
+                            try:
+                                # call compute_signal with the symbol name variant
+                                sig_candidate = module_obj.compute_signal(symname, price, {"bars": bars_ctx})
+                                # sanity-check return type
+                                if sig_candidate is None:
+                                    tried_methods.append(f"{module_name}:{symname}:returned_None")
+                                    continue
+                                # accept numeric floats/ints
+                                if isinstance(sig_candidate, (int, float)):
+                                    sig = float(sig_candidate)
+                                    logging.info("compute_signal -> used %s.compute_signal('%s') -> %s", module_name, symname, sig)
+                                    break
+                                # else, if some modules return a dict, try to extract 'signal'
+                                if isinstance(sig_candidate, dict):
+                                    if "signal" in sig_candidate:
+                                        sig = float(sig_candidate["signal"])
+                                        logging.info("compute_signal -> used %s.compute_signal('%s') returned dict->signal=%s", module_name, symname, sig)
+                                        break
+                                    # fallback: skip unknown dict
+                                    tried_methods.append(f"{module_name}:{symname}:dict_no_signal")
+                                    continue
+                                tried_methods.append(f"{module_name}:{symname}:unsupported_return")
+                            except Exception as e:
+                                logging.debug("compute_signal %s.compute_signal('%s') raised: %s", module_name, symname, e)
+                                tried_methods.append(f"{module_name}:{symname}:exc")
+                        if sig is not None:
+                            break
+
+                    if sig is None:
+                        logging.warning("No compute_signal resolved for sym=%s resolved=%s tried=%s", sym, resolved, tried_methods)
                         continue
                 except Exception as e:
-                    logging.exception("compute_signal error for %s: %s", sym, e)
+                    logging.exception("compute_signal block error for %s/%s: %s", sym, resolved, e)
                     continue
+                # ------------------------------------------------------------------------
 
                 if sig is None:
                     continue
