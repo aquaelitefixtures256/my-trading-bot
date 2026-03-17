@@ -1,210 +1,161 @@
 #!/usr/bin/env python3
-# run_single_xau_test.py
-# Robust runner for a single XAU backtest. Tries multiple call signatures and
-# injects common global overrides if the bot doesn't accept a params kwarg.
+# -*- coding: utf-8 -*-
+"""
+Robust single-symbol XAU run_backtest runner.
+
+Saves debug output to debug_backtest_output/run_single_xau_test.log and prints the best successful call.
+Designed to tolerate different bot.run_backtest signatures.
+
+Usage:
+    python run_single_xau_test.py
+"""
 
 import importlib.util
-import inspect
+import os
 import sys
 import traceback
 from datetime import datetime
 
-BOT_FILE = "KYOTO_INFERNO_V16_fixed-5_upgraded.py"
+# ---------- Edit/confirm these if your filenames differ ----------
+BOT_FILENAME = "KYOTO_INFERNO_V16_fixed-5_upgraded.py"
 SYMBOL = "XAUUSD"
 DAYS = 30
+OUT_DIR = "debug_backtest_output"
+LOG_FILE = os.path.join(OUT_DIR, "run_single_xau_test.log")
+# ----------------------------------------------------------------
 
-# The params we want to test for XAU (tweak these numbers later)
+# PARAMS for single-XAU test — replaced as you requested
 PARAMS = {
-    "signal_thresh": 0.92,
+    "signal_thresh": 0.95,    # raise threshold to reduce noisy entries
     "atr_thresh": 0.0,
     "max_hold": 30,
     "use_atr_sl": True,
-    "sl_atr_mult": 1.2,
-    "tp_atr_mult": 2.5,
-    "require_dxy": False,
+    "sl_atr_mult": 1.5,       # slightly wider SL (was 1.2)
+    "tp_atr_mult": 2.5,       # keep TP multiplier
+    "require_dxy": False      # leave off for now; try later
 }
 
+def safe_makedirs(path):
+    try:
+        os.makedirs(path, exist_ok=True)
+    except Exception:
+        pass
+
 def load_bot(path):
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Bot file not found: {path}")
     spec = importlib.util.spec_from_file_location("kyoto_bot", path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
-def inject_globals(bot_module, symbol, params):
+def try_run_backtest(bot, v15, symbol, days, params, logf):
     """
-    Try a few common global names the bot code might read for parameter overrides.
-    We keep backups of existing values and return a dict to restore them afterwards.
+    Try several plausible run_backtest signatures until one succeeds.
+    Returns tuple(success_bool, used_signature_str, return_value or exception)
     """
-    keys_to_try = [
-        "PARAMS", "PARAMS_OVERRIDE", "BACKTEST_PARAMS", "DEFAULT_PARAMS",
-        "OVERRIDE_PARAMS", "SYMBOL_PARAMS", "SYMBOL_DEFAULTS", "GLOBAL_PARAMS"
+    attempts = [
+        ("v15_symbol_days_params", lambda: bot.run_backtest(v15, symbol=symbol, days=days, params=params)),
+        ("v15_symbol_days",        lambda: bot.run_backtest(v15, symbol=symbol, days=days)),
+        ("symbol_days_params",     lambda: bot.run_backtest(symbol=symbol, days=days, params=params)),
+        ("symbol_days",            lambda: bot.run_backtest(symbol=symbol, days=days)),
+        ("positional_sym_days_params", lambda: bot.run_backtest(symbol, days, params)),
+        ("positional_sym_days",    lambda: bot.run_backtest(symbol, days)),
+        ("single_symbol",          lambda: bot.run_backtest(symbol)),
+        ("no_args",                lambda: bot.run_backtest()),
     ]
-    backup = {}
-    for k in keys_to_try:
-        if hasattr(bot_module, k):
-            backup[k] = getattr(bot_module, k)
+
+    last_exc = None
+    for name, fn in attempts:
         try:
-            # If the module expects per-symbol dict, set a mapping
-            setattr(bot_module, k, {symbol: params})
-        except Exception:
-            try:
-                setattr(bot_module, k, params)
-            except Exception:
-                pass
-    # also set a dedicated per-symbol mapping name (common pattern)
-    try:
-        if not hasattr(bot_module, "SYMBOL_PARAMS_MAP"):
-            bot_module.SYMBOL_PARAMS_MAP = {}
-        backup["SYMBOL_PARAMS_MAP"] = dict(getattr(bot_module, "SYMBOL_PARAMS_MAP", {}))
-        bot_module.SYMBOL_PARAMS_MAP[symbol] = params
-    except Exception:
-        pass
-    return backup
-
-def restore_globals(bot_module, backup):
-    for k, v in backup.items():
-        try:
-            setattr(bot_module, k, v)
-        except Exception:
-            try:
-                delattr(bot_module, k)
-            except Exception:
-                pass
-
-def try_call_run_backtest(bot, v15, symbol, days, params):
-    """
-    Inspect bot.run_backtest signature and attempt a number of call patterns.
-    Returns the (result, method_string, exception_if_any)
-    """
-    fn = getattr(bot, "run_backtest", None)
-    if fn is None or not callable(fn):
-        raise RuntimeError("Bot module has no callable run_backtest function")
-
-    sig = None
-    try:
-        sig = inspect.signature(fn)
-    except Exception:
-        pass
-
-    tried = []
-    exceptions = []
-
-    # helper to attempt a call
-    def attempt(args=None, kwargs=None, desc=None):
-        try:
-            args = args or []
-            kwargs = kwargs or {}
-            tried.append((desc, args, kwargs))
-            result = fn(*args, **kwargs)
-            return ("ok", desc, result, None)
-        except Exception as e:
+            print(f"Trying signature: {name}", file=logf)
+            sys.stdout.write(f"Trying signature: {name} ... ")
+            sys.stdout.flush()
+            result = fn()
+            print("OK", file=logf)
+            print("OK")
+            return True, name, result
+        except TypeError as e:
+            last_exc = e
             tb = traceback.format_exc()
-            exceptions.append((desc, tb))
-            return ("err", desc, None, tb)
+            print(f"TypeError for {name}: {e}", file=logf)
+            # print short to stdout
+            print("TypeError")
+            continue
+        except Exception as e:
+            last_exc = e
+            tb = traceback.format_exc()
+            print(f"Exception for {name}: {e}\n{tb}", file=logf)
+            print("Exception")
+            continue
 
-    # Strategies ordered by likelihood (most conservative first)
-    # 1) Named: v15, symbol, days, params
-    if sig and ("v15" in sig.parameters or "v15_module" in sig.parameters or list(sig.parameters.keys())[:1] in [["v15"], ["v15_module"]]):
-        res = attempt(args=[v15], kwargs={"symbol": symbol, "days": days, "params": params},
-                      desc="v15 + symbol(days) + params")
-        if res[0] == "ok":
-            return res
-
-    # 2) Named: v15, symbol, days (no params)
-    if sig:
-        res = attempt(args=[v15], kwargs={"symbol": symbol, "days": days},
-                      desc="v15 + symbol + days (no params)")
-        if res[0] == "ok":
-            return res
-
-    # 3) Named: symbol, days, params
-    res = attempt(kwargs={"symbol": symbol, "days": days, "params": params},
-                  desc="symbol + days + params (named)")
-    if res[0] == "ok":
-        return res
-
-    # 4) Named: symbol, days (no params)
-    res = attempt(kwargs={"symbol": symbol, "days": days}, desc="symbol + days (named)")
-    if res[0] == "ok":
-        return res
-
-    # 5) Positionals: (v15, symbol, days)
-    res = attempt(args=[v15, symbol, days], desc="positional (v15, symbol, days)")
-    if res[0] == "ok":
-        return res
-
-    # 6) Positionals: (symbol, days)
-    res = attempt(args=[symbol, days], desc="positional (symbol, days)")
-    if res[0] == "ok":
-        return res
-
-    # 7) Extremely permissive: try calling with only v15
-    res = attempt(args=[v15], desc="positional (v15 only)")
-    if res[0] == "ok":
-        return res
-
-    # If nothing succeeded, return errors
-    return ("all_failed", tried, exceptions, None)
+    return False, "all_attempts_failed", last_exc
 
 def main():
-    print("Loading bot:", BOT_FILE)
-    bot = load_bot(BOT_FILE)
+    safe_makedirs(OUT_DIR)
+    with open(LOG_FILE, "a", encoding="utf-8") as logf:
+        start = datetime.utcnow().isoformat()
+        print("="*40, file=logf)
+        print(f"Run start: {start}", file=logf)
+        print("="*40, file=logf)
 
-    # try to load v15 adapter if available (non-fatal)
-    v15 = None
-    try:
-        if hasattr(bot, "load_v15_module"):
-            try:
-                v15 = bot.load_v15_module()
-                print("Loaded v15:", getattr(v15, "__name__", v15))
-            except Exception as e:
-                print("v15 loader present but failed:", e)
-        else:
-            # try common alternative names
-            for name in ("load_v15", "load_v15_impl"):
-                loader = getattr(bot, name, None)
-                if callable(loader):
-                    try:
-                        v15 = loader()
-                        print(f"Loaded v15 via {name}:", getattr(v15, "__name__", v15))
-                        break
-                    except Exception as e:
-                        print(f"{name} loader failed:", e)
-    except Exception as e:
-        print("v15 load attempt error:", e)
+        try:
+            bot = load_bot(BOT_FILENAME)
+            print(f"Loaded bot: {BOT_FILENAME}", file=logf)
+            print(f"Loaded bot: {BOT_FILENAME}")
+        except Exception as e:
+            tb = traceback.format_exc()
+            print("Failed to load bot module:", e, file=logf)
+            print(tb, file=logf)
+            print("Failed to load bot. See log:", LOG_FILE)
+            return 2
 
-    print("Preparing parameter injection (non-destructive).")
-    backup = inject_globals(bot, SYMBOL, PARAMS)
+        # try to load v15 adapter if available
+        v15 = None
+        try:
+            loader = None
+            if hasattr(bot, "load_v15_module") and callable(bot.load_v15_module):
+                loader = bot.load_v15_module
+            elif hasattr(bot, "load_v15") and callable(bot.load_v15):
+                loader = bot.load_v15
+            elif hasattr(bot, "load_v15_impl") and callable(bot.load_v15_impl):
+                loader = bot.load_v15_impl
 
-    print("Attempting to call run_backtest with robust strategy. Time:", datetime.utcnow().isoformat())
-    result = try_call_run_backtest(bot, v15, SYMBOL, DAYS, PARAMS)
+            if loader is not None:
+                try:
+                    v15 = loader()
+                    print("Loaded v15 adapter:", getattr(v15, "__name__", repr(v15)), file=logf)
+                    print("Loaded v15 adapter:", getattr(v15, "__name__", repr(v15)))
+                except Exception as e:
+                    print("v15 loader threw:", file=logf)
+                    print(traceback.format_exc(), file=logf)
+                    v15 = None
+            else:
+                print("No v15 loader found in bot module; continuing with v15=None", file=logf)
+                print("No v15 loader found; continuing with v15=None")
+        except Exception as e:
+            print("Exception while attempting to load v15:", e, file=logf)
+            print(traceback.format_exc(), file=logf)
 
-    # restore globals after attempt
-    restore_globals(bot, backup)
+        # finally try running backtest with robust signatures
+        ok, sig, out = try_run_backtest(bot, v15, SYMBOL, DAYS, PARAMS, logf)
 
-    # Print results clearly
-    if result[0] == "ok":
-        desc = result[1]
-        out = result[2]
-        print("SUCCESS — run_backtest call succeeded using method:", desc)
-        print("Returned value (repr):", repr(out))
-        # friendly guidance where replay CSVs usually end up
-        print("\nIf replay CSVs were produced, check the folder: debug_backtest_output/")
+        print("\n=== RESULT ===", file=logf)
+        print(f"success: {ok}", file=logf)
+        print(f"signature_used: {sig}", file=logf)
+        print(f"returned: {repr(out)}", file=logf)
+        print("\nDetailed traceback / error (if any):", file=logf)
+        if not ok:
+            print(repr(out), file=logf)
+            print(traceback.format_exc(), file=logf)
+
+        # Also print to stdout summary
+        print("\n=== run_single_xau_test summary ===")
+        print("success:", ok)
+        print("signature_used:", sig)
+        print("returned:", repr(out))
+        print("log file:", LOG_FILE)
         return 0
-    else:
-        print("ALL ATTEMPTS FAILED. Summary of attempts and exceptions follows:\n")
-        tried = result[1]
-        excs = result[2]
-        print("Tried call patterns (in order):")
-        for t in tried:
-            desc, args, kwargs = t
-            print(" -", desc, "args_len=", len(args), "kwargs_keys=", list(kwargs.keys()))
-        print("\nExceptions captured:")
-        for name, tb in excs:
-            print("=== attempt:", name, "===\n", tb)
-        print("\nLast exception details printed above. Please paste them here so I can adapt the call pattern.")
-        return 2
 
 if __name__ == "__main__":
-    rc = main()
-    sys.exit(rc)
+    sys.exit(main())
