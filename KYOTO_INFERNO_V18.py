@@ -3842,6 +3842,120 @@ def _kyoto_mem_first_present(payload, *keys):
     return None
 
 
+def _kyoto_mem_infer_symbol(args, kwargs):
+    try:
+        context_symbol = _kyoto_mem_get_context("symbol", None)
+        if context_symbol:
+            return _kyoto_mem_symbol(context_symbol)
+    except Exception:
+        pass
+    try:
+        if isinstance(kwargs, dict):
+            for key in ("symbol", "sym", "ticker", "instrument", "market", "asset"):
+                value = kwargs.get(key)
+                if value:
+                    return _kyoto_mem_symbol(value)
+    except Exception:
+        pass
+    try:
+        for item in args or ():
+            if isinstance(item, str) and item:
+                return _kyoto_mem_symbol(item)
+            if isinstance(item, dict):
+                for key in ("symbol", "sym", "ticker", "instrument", "market", "asset"):
+                    value = item.get(key)
+                    if value:
+                        return _kyoto_mem_symbol(value)
+    except Exception:
+        pass
+    return _kyoto_mem_symbol(None)
+
+
+def _kyoto_mem_infer_timeframe(args, kwargs):
+    try:
+        context_tf = _kyoto_mem_get_context("timeframe", None)
+        if context_tf:
+            return _kyoto_mem_tf(context_tf)
+    except Exception:
+        pass
+    try:
+        if isinstance(kwargs, dict):
+            for key in ("timeframe", "tf", "time_frame", "bar_tf", "period"):
+                value = kwargs.get(key)
+                if value:
+                    return _kyoto_mem_tf(value)
+    except Exception:
+        pass
+    try:
+        for item in args or ():
+            if isinstance(item, str) and item.upper() in ("M30", "H1", "M15", "H4", "D1"):
+                return _kyoto_mem_tf(item)
+            if isinstance(item, dict):
+                for key in ("timeframe", "tf", "time_frame", "bar_tf", "period"):
+                    value = item.get(key)
+                    if value:
+                        return _kyoto_mem_tf(value)
+    except Exception:
+        pass
+    return _kyoto_mem_tf(None)
+
+
+def _kyoto_mem_extract_payload(args, kwargs, result=None):
+    payload = {}
+    try:
+        if isinstance(kwargs, dict):
+            payload.update({k: v for k, v in kwargs.items() if v is not None})
+    except Exception:
+        pass
+    try:
+        for item in args or ():
+            if isinstance(item, dict):
+                payload.update({k: v for k, v in item.items() if v is not None})
+    except Exception:
+        pass
+    try:
+        if isinstance(result, dict):
+            payload.update({k: v for k, v in result.items() if v is not None})
+        elif isinstance(result, (list, tuple)) and result and isinstance(result[0], dict):
+            payload.update({k: v for k, v in result[0].items() if v is not None})
+    except Exception:
+        pass
+    try:
+        ctx = {
+            "symbol": _kyoto_mem_get_context("symbol", None),
+            "timeframe": _kyoto_mem_get_context("timeframe", None),
+            "regime": _kyoto_mem_get_context("regime", None),
+            "volatility": _kyoto_mem_get_context("volatility", None),
+            "atr": _kyoto_mem_get_context("atr", None),
+            "quality": _kyoto_mem_get_context("quality", None),
+            "threshold": _kyoto_mem_get_context("threshold", None),
+            "signal_score": _kyoto_mem_get_context("signal_score", None),
+            "signal_type": _kyoto_mem_get_context("signal_type", None),
+            "setup_id": _kyoto_mem_get_context("setup_id", None),
+            "pattern_id": _kyoto_mem_get_context("pattern_id", None),
+            "signal_key": _kyoto_mem_get_context("signal_key", None),
+        }
+        payload.update({k: v for k, v in ctx.items() if v is not None and k not in payload})
+    except Exception:
+        pass
+    return payload
+
+
+def _kyoto_mem_is_closed(payload):
+    try:
+        if not isinstance(payload, dict):
+            return False
+        status = str(payload.get("status", "") or "").strip().lower()
+        if status in {"closed", "close", "win", "loss", "closed_win", "closed_loss", "tp", "sl", "take_profit", "stop_loss"}:
+            return True
+        pnl = payload.get("pnl")
+        rmult = payload.get("rmult")
+        if pnl is not None or rmult is not None:
+            return True
+    except Exception:
+        pass
+    return False
+
 def _kyoto_mem_signal_key_from_payload(payload, context=None):
     context = context or {}
     merged = {}
