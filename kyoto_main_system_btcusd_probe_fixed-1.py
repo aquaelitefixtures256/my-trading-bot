@@ -17,7 +17,7 @@ import traceback
 import importlib.util
 from pathlib import Path
 
-SYMBOL = "BTCUSD"
+SYMBOL = "BTCUSDm"
 LOT = 0.01
 DEVIATION = 30
 MAGIC = 26012601
