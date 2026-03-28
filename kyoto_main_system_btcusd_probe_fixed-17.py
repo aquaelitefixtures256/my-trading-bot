@@ -17,7 +17,7 @@ import traceback
 import importlib.util
 from pathlib import Path
 
-SYMBOL = "BTCUSD"
+SYMBOL = "BTCUSDm"
 LOT = 0.01
 
 HERE = Path(__file__).resolve().parent
