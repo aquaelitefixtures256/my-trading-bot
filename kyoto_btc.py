@@ -17,8 +17,8 @@ import traceback
 import importlib.util
 from pathlib import Path
 
-BOT_PATH = Path(r"/mnt/data/KYOTO_INFERNO_V18_TYPE_FIX.py")
-SYMBOL = "BTCUSD"
+BOT_PATH = Path(r"/mnt/data/KYOTO_INFERNO_V18.py")
+SYMBOL = "BTCUSDm"
 LOT = 0.01
 DEVIATION = 30
 MAGIC = 26012601
