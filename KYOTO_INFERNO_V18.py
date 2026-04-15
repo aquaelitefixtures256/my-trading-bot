@@ -89,7 +89,7 @@ CONFIG = {
     "PAUSE_TRADING_FILE": "PAUSE_TRADING",
     "KILL_TRADING_FILE": "KILL_TRADING",
     "DRY_RUN_FLAG": False,
-    "EXECUTION_SIGNAL_THRESHOLD": 0.88,
+    "EXECUTION_SIGNAL_THRESHOLD": 0.30,
     "BACKTEST_DAYS": 7,
 }
 
@@ -125,14 +125,14 @@ CONFIG["BACKTEST_PARAMS"].update({
 
 # ===== APPLY SWEEP WINNER FOR XAU (inserted by script) =====
 CONFIG["BACKTEST_PARAMS"].update({
-    "BTCUSD": {"signal_thresh": 0.88, "atr_pct_thresh": 0.0012, "max_hold": 60},
-    "BTCUSDm": {"signal_thresh": 0.88, "atr_pct_thresh": 0.0012, "max_hold": 60},
+    "BTCUSD": {"signal_thresh": 0.30, "atr_pct_thresh": 0.0012, "max_hold": 60},
+    "BTCUSDm": {"signal_thresh": 0.30, "atr_pct_thresh": 0.0012, "max_hold": 60},
 
-    "EURUSD": {"signal_thresh": 0.88, "atr_pct_thresh": 0.0008, "max_hold": 60},
-    "EURUSDm": {"signal_thresh": 0.88, "atr_pct_thresh": 0.0008, "max_hold": 60},
+    "EURUSD": {"signal_thresh": 0.30, "atr_pct_thresh": 0.0008, "max_hold": 60},
+    "EURUSDm": {"signal_thresh": 0.30, "atr_pct_thresh": 0.0008, "max_hold": 60},
 
-    "USDJPY": {"signal_thresh": 0.88, "atr_pct_thresh": 0.0009, "max_hold": 60},
-    "USDJPYm": {"signal_thresh": 0.88, "atr_pct_thresh": 0.0009, "max_hold": 60},
+    "USDJPY": {"signal_thresh": 0.30, "atr_pct_thresh": 0.0009, "max_hold": 60},
+    "USDJPYm": {"signal_thresh": 0.30, "atr_pct_thresh": 0.0009, "max_hold": 60},
 
         "XAUUSD":  {"signal_thresh": 0.92, "dxy_gate_thresh": 0.20, "atr_pct_thresh": 0.0015, "sl_atr_mult": 4.0, "tp_atr_mult": 6.0, "max_hold": 30, "max_loss_abs": 18.0},
     "XAUUSDm": {"signal_thresh": 0.92, "dxy_gate_thresh": 0.20, "atr_pct_thresh": 0.0015, "sl_atr_mult": 4.0, "tp_atr_mult": 6.0, "max_hold": 30, "max_loss_abs": 18.0},
@@ -140,11 +140,11 @@ CONFIG["BACKTEST_PARAMS"].update({
 
 
 
-    "USOIL": {"signal_thresh": 0.88, "atr_pct_thresh": 0.0010, "max_hold": 60},
-    "USOILm": {"signal_thresh": 0.88, "atr_pct_thresh": 0.0010, "max_hold": 60},
+    "USOIL": {"signal_thresh": 0.30, "atr_pct_thresh": 0.0010, "max_hold": 60},
+    "USOILm": {"signal_thresh": 0.30, "atr_pct_thresh": 0.0010, "max_hold": 60},
 
-    "DXY": {"signal_thresh": 0.88, "atr_pct_thresh": 0.0008, "max_hold": 60},
-    "DXYm": {"signal_thresh": 0.88, "atr_pct_thresh": 0.0008, "max_hold": 60},
+    "DXY": {"signal_thresh": 0.30, "atr_pct_thresh": 0.0008, "max_hold": 60},
+    "DXYm": {"signal_thresh": 0.30, "atr_pct_thresh": 0.0008, "max_hold": 60},
 })
 
 
@@ -510,7 +510,7 @@ def compute_correlation(list_a, list_b):
 
 # --- V16 UPGRADE: order wrapper ---
 
-def order_wrapper(mt5_module, order_request):
+def _deprecated_order_wrapper(mt5_module, order_request):
     """Centralized order execution wrapper. order_request is a dict following MT5 order_send or a custom dict."""
     # Basic checks
     if file_flag(CONFIG.get("KILL_TRADING_FILE")):
@@ -679,7 +679,7 @@ def order_wrapper(mt5_module, order_request):
 #   will be caught and will not crash the thread.
 # -----------------------------------------------------------------------------
 
-def execute_signal(sym, signal, price, mt5_module, symbol_map):
+def _deprecated_execute_signal(sym, signal, price, mt5_module, symbol_map):
     """
     Conservative execution helper:
     - Only runs when AUTO_EXECUTE is True and not in DRY_RUN.
@@ -1988,7 +1988,7 @@ def _kyoto_ctx_clear():
     if hasattr(_kyoto_risk_ctx, "data"):
         delattr(_kyoto_risk_ctx, "data")
 
-def allowed_to_open(symbol: str):
+def _deprecated_allowed_to_open(symbol: str):
     try:
         s = str(symbol).upper()
         per = 0
@@ -2251,7 +2251,7 @@ if "make_decision_for_symbol" in globals() and "_KYOTO_ORIG_make_decision_for_sy
 # tighten the scanner threshold at runtime for strong signals only
 try:
     if "CONFIG" in globals():
-        CONFIG["EXECUTION_SIGNAL_THRESHOLD"] = max(float(CONFIG.get("EXECUTION_SIGNAL_THRESHOLD", 0.88)), 0.88)
+        CONFIG["EXECUTION_SIGNAL_THRESHOLD"] = max(float(CONFIG.get("EXECUTION_SIGNAL_THRESHOLD", 0.30)), 0.30)
 except Exception:
     pass
 # --- END KYOTO V18 RISK / SLTP TRANSPLANT ---
@@ -2261,7 +2261,7 @@ except Exception:
 # Keep the intended thresholds and limits from CONFIG / SYMBOL_TRADE_LIMITS,
 # and override any earlier MTF/H1-heavy or threshold-bumping duplicates.
 try:
-    CONFIG["EXECUTION_SIGNAL_THRESHOLD"] = float(CONFIG.get("EXECUTION_SIGNAL_THRESHOLD", 0.88))
+    CONFIG["EXECUTION_SIGNAL_THRESHOLD"] = float(CONFIG.get("EXECUTION_SIGNAL_THRESHOLD", 0.30))
 except Exception:
     pass
 
@@ -2276,7 +2276,7 @@ except Exception:
     SYMBOL_TRADE_LIMITS = {"USOIL": 3, "BTCUSD": 3, "USDJPY": 10, "EURUSD": 10, "XAUUSD": 2}
 
 
-def allowed_to_open(symbol: str):
+def _deprecated_allowed_to_open(symbol: str):
     """Final live enforcement for open-trade limits."""
     try:
         s = str(symbol).upper()
@@ -2312,7 +2312,7 @@ def allowed_to_open(symbol: str):
         return False, "error"
 
 
-def order_wrapper(mt5_module, order_request):
+def _deprecated_order_wrapper(mt5_module, order_request):
     """Final order wrapper: enforce SL/TP, preserve broker safety, and never crash on None."""
     try:
         ctx = _kyoto_ctx_get() or {}
@@ -2356,7 +2356,7 @@ def order_wrapper(mt5_module, order_request):
         return {"retcode": -1, "comment": str(e)}
 
 
-def execute_signal(sym, signal, price, mt5_module, symbol_map):
+def _deprecated_execute_signal(sym, signal, price, mt5_module, symbol_map):
     """Final live execution gate: strong signal only, symbol threshold + execution threshold, no MTF dependency."""
     try:
         sym_u = str(sym).upper()
@@ -2465,7 +2465,7 @@ def execute_signal(sym, signal, price, mt5_module, symbol_map):
 
 # Keep the final execution gate in the config at the intended value.
 try:
-    CONFIG["EXECUTION_SIGNAL_THRESHOLD"] = 0.88
+    CONFIG["EXECUTION_SIGNAL_THRESHOLD"] = 0.30
 except Exception:
     pass
 
@@ -2574,7 +2574,7 @@ def _kyoto_count_total_open() -> int:
 
     return 0
 
-def allowed_to_open(symbol: str):
+def _deprecated_allowed_to_open(symbol: str):
     """
     Final hard gate for open-trade limits.
     This is the single source of truth used by execution.
@@ -2606,7 +2606,7 @@ if "_KYOTO_ORIG_order_wrapper_LIMITS" not in globals():
 if "_KYOTO_ORIG_execute_signal_LIMITS" not in globals():
     _KYOTO_ORIG_execute_signal_LIMITS = globals().get("execute_signal")
 
-def order_wrapper(mt5_module, order_request):
+def _deprecated_order_wrapper(mt5_module, order_request):
     """
     Final execution wrapper with hard max-open enforcement.
     Never opens beyond per-symbol or global limits.
@@ -2635,7 +2635,7 @@ def order_wrapper(mt5_module, order_request):
         logger.exception("Final LIMITS order_wrapper failed: %s", e)
         return {"retcode": -1, "comment": str(e)}
 
-def execute_signal(sym, signal, price, mt5_module, symbol_map):
+def _deprecated_execute_signal(sym, signal, price, mt5_module, symbol_map):
     """
     Strong-signal execution gate with max-open enforcement as a hard stop.
     """
@@ -2662,7 +2662,7 @@ def execute_signal(sym, signal, price, mt5_module, symbol_map):
 
 # Keep the intended execution threshold as-is.
 try:
-    CONFIG["EXECUTION_SIGNAL_THRESHOLD"] = float(CONFIG.get("EXECUTION_SIGNAL_THRESHOLD", 0.88))
+    CONFIG["EXECUTION_SIGNAL_THRESHOLD"] = float(CONFIG.get("EXECUTION_SIGNAL_THRESHOLD", 0.30))
 except Exception:
     pass
 # --- END FINAL LIMIT ENFORCEMENT OVERRIDE ---
@@ -2905,7 +2905,7 @@ def _kyoto_broker_symbol(symbol):
         if callable(fn):
             mapped = fn(s)
             if mapped:
-                return str(mapped).upper()
+                return str(mapped)
     except Exception:
         pass
     return s
@@ -2948,7 +2948,7 @@ def _kyoto_positions_snapshot(mt5_module=None):
     return total, per_map
 
 
-def allowed_to_open(symbol: str):
+def _deprecated_allowed_to_open(symbol: str):
     """Final hard gate: global cap + per-symbol cap, with MT5-first counting."""
     try:
         s = _kyoto_canonical_symbol(symbol)
@@ -3207,7 +3207,7 @@ if "execute_signal" in globals() and "_KYOTO_ORIG_execute_signal_STRICT" not in 
 
 # Reassert the final live settings.
 try:
-    CONFIG["EXECUTION_SIGNAL_THRESHOLD"] = float(CONFIG.get("EXECUTION_SIGNAL_THRESHOLD", 0.88))
+    CONFIG["EXECUTION_SIGNAL_THRESHOLD"] = float(CONFIG.get("EXECUTION_SIGNAL_THRESHOLD", 0.30))
 except Exception:
     pass
 
@@ -3432,7 +3432,7 @@ def _kyoto_order_success(res):
     return False
 
 
-def allowed_to_open(symbol):
+def _deprecated_allowed_to_open(symbol: str):
     """
     Final hard gate used by execution, with reservations included.
     """
@@ -3469,7 +3469,7 @@ if "_KYOTO_PREV_execute_signal_FINAL_LIMITS" not in globals():
     _KYOTO_PREV_execute_signal_FINAL_LIMITS = globals().get("execute_signal")
 
 
-def order_wrapper(mt5_module, order_request):
+def _deprecated_order_wrapper(mt5_module, order_request):
     """
     Final hard gate with atomic reservation.
     """
@@ -3518,7 +3518,7 @@ def order_wrapper(mt5_module, order_request):
             pass
 
 
-def execute_signal(sym, signal, price, mt5_module, symbol_map):
+def _deprecated_execute_signal(sym, signal, price, mt5_module, symbol_map):
     """
     Keep execute_signal strict, but let order_wrapper do the atomic enforcement.
     """
@@ -3560,141 +3560,7 @@ except Exception:
 # --- END FINAL HARD LIMIT PATCH ---
 
 
-# --- FINAL ONE-DOOR LIVE ENFORCEMENT PATCH ---
-try:
-    _KYOTO_PREV_UVXExecutionEngine_market_order = UVXExecutionEngine.market_order
 
-    def _kyoto_uvx_market_order(self, symbol, side, size, sl=None, tp=None):
-        sym = str(symbol).upper()
-        token = None
-        try:
-            if getattr(self, "mode", "dry_run") == "mt5":
-                if sym.startswith(("DXY", "US10Y")):
-                    return {"order_id": None, "status": "blocked", "comment": "MACRO_FILTER_SYMBOL_ONLY"}
-                ok, reason, token = _kyoto_limit_reserve(sym)
-                if not ok:
-                    logger.info("Execution skipped for %s: %s", sym, reason)
-                    return {"order_id": None, "status": "blocked", "comment": reason}
-                try:
-                    _KYOTO_LIMIT_CTX["token"] = token
-                    _KYOTO_LIMIT_CTX["symbol"] = sym
-                except Exception:
-                    pass
-                try:
-                    ok2, reason2 = allowed_to_open(sym)
-                    if not ok2:
-                        logger.info("Execution skipped for %s: %s", sym, reason2)
-                        _kyoto_limit_release(token)
-                        return {"order_id": None, "status": "blocked", "comment": reason2}
-                except Exception:
-                    _kyoto_limit_release(token)
-                    logger.exception("Live market_order gate failed for %s", sym)
-                    return {"order_id": None, "status": "blocked", "comment": "LIMIT_GATE_ERROR"}
-        except Exception:
-            try:
-                _kyoto_limit_release(token)
-            except Exception:
-                pass
-            logger.exception("Live market_order gate failed for %s", sym)
-            return {"order_id": None, "status": "blocked", "comment": "LIMIT_GATE_ERROR"}
-        try:
-            res = _KYOTO_PREV_UVXExecutionEngine_market_order(self, symbol, side, size, sl, tp)
-            if getattr(self, "mode", "dry_run") == "mt5" and not _kyoto_order_success(res):
-                _kyoto_limit_release(token)
-            return res
-        except Exception:
-            _kyoto_limit_release(token)
-            raise
-        finally:
-            try:
-                _KYOTO_LIMIT_CTX["token"] = None
-                _KYOTO_LIMIT_CTX["symbol"] = None
-            except Exception:
-                pass
-
-    UVXExecutionEngine.market_order = _kyoto_uvx_market_order
-except Exception:
-    pass
-
-try:
-    _KYOTO_PREV_execute_signal_ONE_DOOR = globals().get("execute_signal")
-
-    def execute_signal(sym, signal, price, mt5_module, symbol_map):
-        try:
-            sym_u = str(sym).upper()
-            if sym_u.startswith(("DXY", "US10Y")):
-                logger.info("Execution skipped for %s: macro filter symbol only", sym)
-                return None
-            if not globals().get("AUTO_EXECUTE", True):
-                logger.info("Execution skipped for %s: AUTO_EXECUTE disabled", sym)
-                return None
-            if CONFIG.get("DRY_RUN") or CONFIG.get("DRY_RUN_FLAG"):
-                logger.info("Execution skipped for %s: DRY_RUN active", sym)
-                return None
-            if signal is None:
-                logger.info("Execution skipped for %s: signal is None", sym)
-                return None
-            try:
-                signal = float(signal)
-            except Exception:
-                return None
-
-            params = CONFIG.get("BACKTEST_PARAMS", {}).get(sym_u, CONFIG.get("BACKTEST_PARAMS", {}).get(sym, {}))
-            threshold = max(
-                float(params.get("signal_thresh", 0.0) or 0.0),
-                float(CONFIG.get("EXECUTION_SIGNAL_THRESHOLD", 0.88))
-            )
-            if abs(signal) < threshold:
-                logger.info(
-                    "Execution skipped for %s: signal below execution threshold (%.3f) signal=%.4f",
-                    sym, threshold, signal
-                )
-                return None
-
-            allowed, reason = allowed_to_open(sym_u)
-            if not allowed:
-                logger.info("Execution skipped for %s: %s", sym, reason)
-                return None
-
-            mapped = symbol_map.get(sym, sym) if symbol_map else sym
-            side = "buy" if signal > 0 else "sell"
-            volume = float(CONFIG.get("DEFAULT_ORDER_VOLUME", 0.01))
-            req = {"symbol": mapped, "volume": volume, "type": side, "price": float(price or 0.0)}
-
-            _kyoto_ctx_set(
-                symbol=sym_u,
-                signal=signal,
-                quality=min(1.0, abs(signal)),
-                regime="trending",
-                allowed=allowed,
-                reason=reason,
-                entry=float(price or 0.0),
-                tech=signal,
-                fund=float(get_fused_score(sym_u)) if "get_fused_score" in globals() else 0.0,
-                sent=float(get_news_impact_score(sym_u)) if "get_news_impact_score" in globals() else 0.0,
-                symbol_map=dict(symbol_map or {}),
-            )
-            try:
-                return order_wrapper(mt5_module, req)
-            finally:
-                try:
-                    _kyoto_ctx_clear()
-                except Exception:
-                    pass
-        except Exception:
-            try:
-                logger.exception("One-door execute_signal failed for %s", sym)
-            except Exception:
-                pass
-            try:
-                _kyoto_ctx_clear()
-            except Exception:
-                pass
-            return None
-
-except Exception:
-    pass
-# --- END FINAL ONE-DOOR LIVE ENFORCEMENT PATCH ---
 
 
 # --- KYOTO MEMORY LAYER (per-symbol / per-timeframe adaptive memory) ---
@@ -5352,7 +5218,7 @@ except Exception:
 try:
     if "CONFIG" in globals():
         # keep the existing strong execution guard, but make the adaptive layer visible
-        CONFIG["EXECUTION_SIGNAL_THRESHOLD"] = float(CONFIG.get("EXECUTION_SIGNAL_THRESHOLD", 0.88))
+        CONFIG["EXECUTION_SIGNAL_THRESHOLD"] = float(CONFIG.get("EXECUTION_SIGNAL_THRESHOLD", 0.30))
 except Exception:
     pass
 
@@ -5462,7 +5328,7 @@ def _kyoto_part3_initialize_runtime():
         try:
             if "CONFIG" in globals() and isinstance(CONFIG, dict):
                 CONFIG["DRY_RUN_FLAG"] = False
-                CONFIG["EXECUTION_SIGNAL_THRESHOLD"] = float(CONFIG.get("EXECUTION_SIGNAL_THRESHOLD", 0.88))
+                CONFIG["EXECUTION_SIGNAL_THRESHOLD"] = float(CONFIG.get("EXECUTION_SIGNAL_THRESHOLD", 0.30))
         except Exception:
             pass
 
@@ -5895,3 +5761,2475 @@ except Exception:
         pass
 
 # --- END PART 3 LIVE RUNTIME LAYER ---
+
+
+# === FINAL SINGLE-DOOR TRADE LIMIT LOCK (added last) ===
+try:
+    import threading as _kyoto_threading
+    import time as _kyoto_time
+    import uuid as _kyoto_uuid
+except Exception:
+    pass
+
+try:
+    SYMBOL_TRADE_LIMITS = {
+        "BTCUSD": 3,
+        "USOIL": 3,
+        "EURUSD": 10,
+        "USDJPY": 10,
+        "XAUUSD": 2,
+    }
+except Exception:
+    pass
+
+try:
+    GLOBAL_MAX_OPEN_TRADES = 8
+except Exception:
+    pass
+
+if "_KYOTO_FINAL_LIMIT_LOCK" not in globals():
+    _KYOTO_FINAL_LIMIT_LOCK = _kyoto_threading.RLock()
+if "_KYOTO_FINAL_LIMIT_PENDING" not in globals():
+    _KYOTO_FINAL_LIMIT_PENDING = {}
+if "_KYOTO_FINAL_LIMIT_CTX" not in globals():
+    _KYOTO_FINAL_LIMIT_CTX = {"token": None, "symbol": None}
+
+
+def _kyoto_final_symbol(symbol):
+    try:
+        return str(symbol or "").upper().strip()
+    except Exception:
+        return ""
+
+
+def _kyoto_final_cleanup(now=None):
+    try:
+        if now is None:
+            now = _kyoto_time.time()
+        ttl = int(globals().get("_KYOTO_FINAL_LIMIT_TTL_SECONDS", 120))
+        pending = globals().get("_KYOTO_FINAL_LIMIT_PENDING", {})
+        if not isinstance(pending, dict):
+            globals()["_KYOTO_FINAL_LIMIT_PENDING"] = {}
+            return
+        dead = []
+        for tok, meta in list(pending.items()):
+            try:
+                if now - float(meta.get("ts", now)) > ttl:
+                    dead.append(tok)
+            except Exception:
+                dead.append(tok)
+        for tok in dead:
+            pending.pop(tok, None)
+    except Exception:
+        pass
+
+
+def _kyoto_final_live_counts(symbol=None, ignore_token=None):
+    sym = _kyoto_final_symbol(symbol) if symbol is not None else None
+    total = 0
+    per = 0
+    try:
+        mt5_mod = globals().get("_mt5")
+        if globals().get("MT5_AVAILABLE") and globals().get("_mt5_connected") and mt5_mod is not None:
+            try:
+                positions = mt5_mod.positions_get() or []
+                total = len(positions)
+                if sym is not None:
+                    for p in positions:
+                        psym = str(getattr(p, "symbol", "") or "").upper()
+                        if psym == sym or psym.startswith(sym) or psym.startswith(sym.replace("M", "")):
+                            per += 1
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # best-effort fallback to existing counters if MT5 is unavailable
+    try:
+        fn = globals().get("count_open_positions")
+        if callable(fn):
+            result = fn()
+            if isinstance(result, tuple) and len(result) >= 2:
+                total2 = int(result[0] or 0)
+                per_map = result[1] if isinstance(result[1], dict) else {}
+                total = max(total, total2)
+                if sym is not None:
+                    per = max(per, int(per_map.get(sym, per_map.get(sym.replace("M", ""), 0)) or 0))
+            elif isinstance(result, dict):
+                per_map = {str(k).upper(): int(v or 0) for k, v in result.items()}
+                total2 = sum(per_map.values())
+                total = max(total, total2)
+                if sym is not None:
+                    per = max(per, int(per_map.get(sym, per_map.get(sym.replace("M", ""), 0)) or 0))
+    except Exception:
+        pass
+
+    try:
+        fn = globals().get("get_open_positions_count")
+        if callable(fn) and sym is not None:
+            per = max(per, int(fn(sym) or 0))
+    except Exception:
+        pass
+
+    try:
+        _kyoto_final_cleanup()
+        pending = globals().get("_KYOTO_FINAL_LIMIT_PENDING", {})
+        if isinstance(pending, dict):
+            for tok, meta in list(pending.items()):
+                if ignore_token is not None and tok == ignore_token:
+                    continue
+                total += 1
+                if sym is not None and str(meta.get("symbol", "")).upper() == sym:
+                    per += 1
+    except Exception:
+        pass
+
+    return int(total or 0), int(per or 0)
+
+
+def _kyoto_final_reserve(symbol):
+    sym = _kyoto_final_symbol(symbol)
+    try:
+        with _KYOTO_FINAL_LIMIT_LOCK:
+            _kyoto_final_cleanup()
+            total, per = _kyoto_final_live_counts(sym, None)
+            gmax = int(globals().get("GLOBAL_MAX_OPEN_TRADES", 8))
+            limits = dict(globals().get("SYMBOL_TRADE_LIMITS", {"BTCUSD": 3, "USOIL": 3, "EURUSD": 10, "USDJPY": 10, "XAUUSD": 2}))
+            limit = int(limits.get(sym, int(os.getenv("BEAST_MAX_PER_SYMBOL_DEFAULT", "10"))))
+            if total >= gmax:
+                return False, f"global_max_open_reached:{total}", None
+            if per >= limit:
+                return False, f"symbol_limit_reached:{sym}:{per}/{limit}", None
+            token = _kyoto_uuid.uuid4().hex
+            _KYOTO_FINAL_LIMIT_PENDING[token] = {"symbol": sym, "ts": _kyoto_time.time()}
+            return True, "ok", token
+    except Exception as e:
+        try:
+            logger.exception("final reserve failed for %s: %s", symbol, e)
+        except Exception:
+            pass
+        return False, "error", None
+
+
+def _kyoto_final_release(token):
+    try:
+        if not token:
+            return
+        with _KYOTO_FINAL_LIMIT_LOCK:
+            _KYOTO_FINAL_LIMIT_PENDING.pop(token, None)
+    except Exception:
+        pass
+
+
+def _kyoto_final_order_success(res):
+    try:
+        if res is None:
+            return False
+        if isinstance(res, dict):
+            rc = res.get("retcode", None)
+            if rc is not None:
+                try:
+                    if int(rc) == 0:
+                        return True
+                except Exception:
+                    pass
+            st = str(res.get("status", "")).lower()
+            if st in {"sent", "filled", "ok", "success", "executed"}:
+                return True
+            if res.get("order_id") is not None or res.get("order") is not None:
+                return True
+            if res.get("comment") and str(res.get("comment")).startswith("global_max_open_reached"):
+                return False
+        st = str(getattr(res, "status", "")).lower()
+        if st in {"sent", "filled", "ok", "success", "executed"}:
+            return True
+        rc = getattr(res, "retcode", None)
+        if rc is not None:
+            try:
+                if int(rc) == 0:
+                    return True
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return False
+
+
+def allowed_to_open(symbol):
+    try:
+        sym = _kyoto_final_symbol(symbol)
+        if sym.startswith(("DXY", "US10Y")):
+            return False, "macro_filter_symbol_only"
+        ignore_token = None
+        try:
+            ignore_token = globals().get("_KYOTO_FINAL_LIMIT_CTX", {}).get("token")
+        except Exception:
+            pass
+        total, per = _kyoto_final_live_counts(sym, ignore_token)
+        gmax = int(globals().get("GLOBAL_MAX_OPEN_TRADES", 8))
+        limits = dict(globals().get("SYMBOL_TRADE_LIMITS", {"BTCUSD": 3, "USOIL": 3, "EURUSD": 10, "USDJPY": 10, "XAUUSD": 2}))
+        limit = int(limits.get(sym, int(os.getenv("BEAST_MAX_PER_SYMBOL_DEFAULT", "10"))))
+        if total >= gmax:
+            return False, f"global_max_open_reached:{total}"
+        if per >= limit:
+            return False, f"symbol_limit_reached:{sym}:{per}/{limit}"
+        return True, "ok"
+    except Exception:
+        try:
+            logger.exception("final allowed_to_open failed for %s", symbol)
+        except Exception:
+            pass
+        return False, "error"
+
+
+def _kyoto_final_send_request(mt5_module, req):
+    if mt5_module is None:
+        return {"retcode": -1, "comment": "NO_MT5_MODULE"}
+    if req is None:
+        return {"retcode": -1, "comment": "ORDER_REQUEST_NONE"}
+    if not isinstance(req, dict):
+        try:
+            req = dict(req)
+        except Exception:
+            return {"retcode": -1, "comment": "BAD_ORDER_REQUEST"}
+
+    try:
+        info = mt5_module.account_info()
+        if info is None:
+            return {"retcode": -1, "comment": "NO_ACCOUNT"}
+    except Exception:
+        return {"retcode": -1, "comment": "NO_ACCOUNT"}
+
+    try:
+        raw_sym = _kyoto_final_symbol(req.get("symbol") or req.get("instrument"))
+        if not raw_sym:
+            return {"retcode": -1, "comment": "NO_SYMBOL", "request": req}
+
+        sym = raw_sym
+        try:
+            broker_mapper = globals().get("map_symbol_to_broker")
+            if callable(broker_mapper):
+                mapped = broker_mapper(raw_sym)
+                mapped = str(mapped).strip() if mapped is not None else ""
+                if mapped:
+                    sym = mapped
+        except Exception:
+            pass
+
+        broker_symbol_fn = globals().get("_kyoto_broker_symbol")
+        if callable(broker_symbol_fn):
+            try:
+                mapped2 = broker_symbol_fn(sym)
+                if mapped2:
+                    sym = str(mapped2).strip()
+            except Exception:
+                pass
+
+        req["symbol"] = sym
+
+        if "action" not in req:
+            req["action"] = getattr(mt5_module, "TRADE_ACTION_DEAL", req.get("action"))
+        if "deviation" not in req:
+            req["deviation"] = 20
+        if "magic" not in req:
+            req["magic"] = 123456
+        if "comment" not in req:
+            req["comment"] = "kyoto_final"
+
+        original_side = str(req.get("type", req.get("side", ""))).lower().strip()
+        buy_const = getattr(mt5_module, "ORDER_TYPE_BUY", None)
+        sell_const = getattr(mt5_module, "ORDER_TYPE_SELL", None)
+        type_value = req.get("type")
+        is_buy = original_side in {"buy", "long"} or type_value == buy_const
+        is_sell = original_side in {"sell", "short"} or type_value == sell_const
+
+        if is_buy:
+            req["type"] = buy_const if buy_const is not None else req.get("type")
+        elif is_sell:
+            req["type"] = sell_const if sell_const is not None else req.get("type")
+        elif isinstance(type_value, str):
+            return {"retcode": -1, "comment": f"BAD_ORDER_SIDE:{req.get('type')}", "request": req}
+
+        try:
+            try:
+                if hasattr(mt5_module, "symbol_select"):
+                    mt5_module.symbol_select(sym, True)
+            except Exception:
+                pass
+
+            si = None
+            try:
+                si = mt5_module.symbol_info(sym)
+            except Exception:
+                si = None
+
+            if si is None:
+                fallback_variants = [raw_sym, raw_sym + "m", raw_sym + ".m"]
+                for alt in fallback_variants:
+                    alt = _kyoto_final_symbol(alt)
+                    if not alt or alt == sym:
+                        continue
+                    try:
+                        if hasattr(mt5_module, "symbol_select"):
+                            mt5_module.symbol_select(alt, True)
+                    except Exception:
+                        pass
+                    try:
+                        si = mt5_module.symbol_info(alt)
+                    except Exception:
+                        si = None
+                    if si is not None:
+                        sym = alt
+                        req["symbol"] = sym
+                        break
+            if si is None:
+                return {"retcode": -1, "comment": "SYMBOL_INFO_MISSING", "request": req}
+
+            tick = None
+            try:
+                tick = mt5_module.symbol_info_tick(sym)
+            except Exception:
+                tick = None
+
+            def _round_to_step(value, step, minimum):
+                try:
+                    if step and step > 0:
+                        steps = round((float(value) - float(minimum)) / float(step))
+                        return float(minimum) + (steps * float(step))
+                except Exception:
+                    pass
+                return float(value)
+
+            vol_min = float(getattr(si, "volume_min", 0.01) or 0.01)
+            vol_step = float(getattr(si, "volume_step", 0.01) or 0.01)
+            vol_max = getattr(si, "volume_max", None)
+            try:
+                req["volume"] = float(req.get("volume") or vol_min)
+            except Exception:
+                req["volume"] = vol_min
+            req["volume"] = max(vol_min, _round_to_step(req["volume"], vol_step, vol_min))
+            if vol_max not in (None, 0, 0.0) and req["volume"] > float(vol_max):
+                req["volume"] = float(vol_max)
+
+            point = float(getattr(si, "point", None) or getattr(si, "trade_tick_size", None) or getattr(si, "tick_size", None) or 0.00001)
+            stop_level = getattr(si, "stop_level", None)
+            if stop_level is not None and stop_level >= 0:
+                min_sl_dist = float(stop_level) * point
+            else:
+                min_sl_dist = point * 10.0
+            min_sl_dist = max(min_sl_dist, point)
+
+            if req.get("price") in (None, 0, 0.0):
+                if tick is not None:
+                    if is_buy and hasattr(tick, "ask") and tick.ask:
+                        req["price"] = float(tick.ask)
+                    elif is_sell and hasattr(tick, "bid") and tick.bid:
+                        req["price"] = float(tick.bid)
+                    else:
+                        req["price"] = float(getattr(tick, "last", 0.0) or getattr(tick, "bid", 0.0) or getattr(tick, "ask", 0.0) or 0.0)
+
+            try:
+                price = float(req.get("price") or 0.0)
+            except Exception:
+                price = 0.0
+            if price <= 0:
+                return {"retcode": -1, "comment": "NO_VALID_PRICE", "request": req}
+
+            try:
+                sl = req.get("sl", None)
+                tp = req.get("tp", None)
+                if sl in (None, 0, 0.0, ""):
+                    req["sl"] = price - min_sl_dist if is_buy else price + min_sl_dist
+                else:
+                    req["sl"] = float(sl)
+                    if abs(price - req["sl"]) < min_sl_dist:
+                        req["sl"] = (price - min_sl_dist) if is_buy else (price + min_sl_dist)
+                if tp in (None, 0, 0.0, ""):
+                    req["tp"] = price + (min_sl_dist * 2.0) if is_buy else price - (min_sl_dist * 2.0)
+                else:
+                    req["tp"] = float(tp)
+                    if abs(price - req["tp"]) < min_sl_dist:
+                        req["tp"] = (price + (min_sl_dist * 2.0)) if is_buy else (price - (min_sl_dist * 2.0))
+            except Exception:
+                if is_buy:
+                    req["sl"] = price - min_sl_dist
+                    req["tp"] = price + (min_sl_dist * 2.0)
+                else:
+                    req["sl"] = price + min_sl_dist
+                    req["tp"] = price - (min_sl_dist * 2.0)
+
+            try:
+                if req.get("type_filling") in (None, 0, 0.0, ""):
+                    filling = getattr(si, "filling_mode", None)
+                    if filling in (None, 0, 0.0, ""):
+                        filling = getattr(mt5_module, "ORDER_FILLING_RETURN", None)
+                    if filling in (None, 0, 0.0, ""):
+                        filling = getattr(mt5_module, "ORDER_FILLING_IOC", None)
+                    if filling not in (None, 0, 0.0, ""):
+                        req["type_filling"] = filling
+            except Exception:
+                pass
+
+            res = mt5_module.order_send(req)
+            return res
+        except Exception:
+            return {"retcode": -1, "comment": "SYMBOL_INFO_MISSING", "request": req}
+    except Exception as e:
+        try:
+            logger.exception("final send request failed: %s", e)
+        except Exception:
+            pass
+        return {"retcode": -1, "comment": str(e), "request": req}
+
+
+def order_wrapper(mt5_module, order_request):
+    token = None
+    sym = ""
+    try:
+        req = dict(order_request) if isinstance(order_request, dict) else dict(order_request or {})
+        sym = _kyoto_final_symbol(req.get("symbol") or req.get("instrument") or req.get("symbol_name"))
+        if not sym:
+            return {"retcode": -1, "comment": "NO_SYMBOL", "request": req}
+        ok, reason, token = _kyoto_final_reserve(sym)
+        if not ok:
+            logger.info("Execution skipped for %s: %s", sym, reason)
+            return {"retcode": -1, "comment": reason, "request": req}
+        try:
+            _KYOTO_FINAL_LIMIT_CTX["token"] = token
+            _KYOTO_FINAL_LIMIT_CTX["symbol"] = sym
+        except Exception:
+            pass
+        res = _kyoto_final_send_request(mt5_module, req)
+        if not _kyoto_final_order_success(res):
+            _kyoto_final_release(token)
+        return res if isinstance(res, dict) else (res._asdict() if hasattr(res, "_asdict") else {"raw": str(res)})
+    except Exception as e:
+        try:
+            logger.exception("Final order_wrapper failed for %s: %s", sym, e)
+        except Exception:
+            pass
+        _kyoto_final_release(token)
+        return {"retcode": -1, "comment": str(e), "request": order_request}
+    finally:
+        try:
+            _KYOTO_FINAL_LIMIT_CTX["token"] = None
+            _KYOTO_FINAL_LIMIT_CTX["symbol"] = None
+        except Exception:
+            pass
+
+
+def execute_signal(sym, signal, price, mt5_module, symbol_map):
+    try:
+        sym_u = _kyoto_final_symbol(sym)
+        if sym_u.startswith(("DXY", "US10Y")):
+            return None
+        if signal is None:
+            return None
+        try:
+            signal = float(signal)
+        except Exception:
+            return None
+        params = globals().get("CONFIG", {}).get("BACKTEST_PARAMS", {}).get(sym_u, {}) if isinstance(globals().get("CONFIG", {}), dict) else {}
+        threshold = float(params.get("signal_thresh", globals().get("CONFIG", {}).get("EXECUTION_SIGNAL_THRESHOLD", 0.30) if isinstance(globals().get("CONFIG", {}), dict) else 0.30))
+        if abs(signal) < threshold:
+            logger.info("Execution skipped for %s: signal below execution threshold (%.3f) signal=%.4f", sym, threshold, signal)
+            return None
+        ok, reason = allowed_to_open(sym_u)
+        if not ok:
+            logger.info("Execution skipped for %s: %s", sym, reason)
+            return None
+        mapped = symbol_map.get(sym, sym) if symbol_map else sym
+        side = "buy" if signal > 0 else "sell"
+        volume = float(globals().get("CONFIG", {}).get("DEFAULT_ORDER_VOLUME", 0.01) if isinstance(globals().get("CONFIG", {}), dict) else 0.01)
+        req = {"symbol": mapped, "volume": volume, "type": side, "price": float(price or 0.0)}
+        try:
+            _kyoto_ctx_set = globals().get("_kyoto_ctx_set")
+            if callable(_kyoto_ctx_set):
+                _kyoto_ctx_set(symbol=sym_u, signal=signal, quality=min(1.0, abs(signal)), regime="trending", allowed=ok, reason=reason, entry=float(price or 0.0), tech=signal)
+        except Exception:
+            pass
+        return order_wrapper(mt5_module, req)
+    except Exception:
+        try:
+            logger.exception("final execute_signal failed for %s", sym)
+        except Exception:
+            pass
+        return None
+
+try:
+    if "UVXExecutionEngine" in globals() and hasattr(UVXExecutionEngine, "market_order"):
+        def _kyoto_final_uvx_market_order(self, symbol, side, size, sl=None, tp=None):
+            sym = _kyoto_broker_symbol(symbol) if callable(globals().get("_kyoto_broker_symbol")) else _kyoto_final_symbol(symbol)
+            if not sym:
+                return {"order_id": None, "status": "blocked", "comment": "NO_SYMBOL"}
+            if getattr(self, "mode", "dry_run") != "mt5":
+                return {"order_id": None, "status": "blocked", "comment": "LIVE_ONLY"}
+            if str(sym).upper().startswith(("DXY", "US10Y")):
+                return {"order_id": None, "status": "blocked", "comment": "MACRO_FILTER_SYMBOL_ONLY"}
+            ok, reason, token = _kyoto_final_reserve(sym)
+            if not ok:
+                logger.info("Execution skipped for %s: %s", sym, reason)
+                return {"order_id": None, "status": "blocked", "comment": reason}
+            try:
+                _KYOTO_FINAL_LIMIT_CTX["token"] = token
+                _KYOTO_FINAL_LIMIT_CTX["symbol"] = sym
+
+                if hasattr(self._mt5, "symbol_select"):
+                    try:
+                        self._mt5.symbol_select(sym, True)
+                    except Exception:
+                        pass
+
+                tick = None
+                try:
+                    tick = self._mt5.symbol_info_tick(sym)
+                except Exception:
+                    tick = None
+
+                req = {
+                    "action": getattr(self._mt5, "TRADE_ACTION_DEAL", None),
+                    "symbol": sym,
+                    "volume": float(size),
+                    "type": getattr(self._mt5, "ORDER_TYPE_BUY", None) if str(side).lower() == "buy" else getattr(self._mt5, "ORDER_TYPE_SELL", None),
+                    "price": float(getattr(tick, "ask", 0.0) if str(side).lower() == "buy" else getattr(tick, "bid", 0.0)),
+                    "deviation": 10,
+                    "magic": 123456,
+                    "comment": "kyoto_final",
+                }
+                if req["price"] <= 0.0:
+                    return {"order_id": None, "status": "blocked", "comment": "NO_VALID_PRICE", "request": req}
+                if sl is not None:
+                    req["sl"] = float(sl)
+                if tp is not None:
+                    req["tp"] = float(tp)
+                if req.get("sl") in (None, 0, 0.0, "") or req.get("tp") in (None, 0, 0.0, ""):
+                    try:
+                        si = self._mt5.symbol_info(sym)
+                        point = float(getattr(si, "point", 0.00001) or 0.00001)
+                    except Exception:
+                        point = 0.00001
+                    dist = max(point * 10.0, point)
+                    if str(side).lower() == "buy":
+                        req.setdefault("sl", req["price"] - dist)
+                        req.setdefault("tp", req["price"] + dist * 2.0)
+                    else:
+                        req.setdefault("sl", req["price"] + dist)
+                        req.setdefault("tp", req["price"] - dist * 2.0)
+                res = _kyoto_final_send_request(self._mt5, req)
+                if not _kyoto_final_order_success(res):
+                    _kyoto_final_release(token)
+                if isinstance(res, dict):
+                    return {"order_id": res.get("order") or res.get("order_id"), "status": res.get("retcode") or res.get("status"), "raw": res}
+                return res
+            except Exception as e:
+                _kyoto_final_release(token)
+                logger.exception("final UVX market_order failed for %s", sym)
+                return {"order_id": None, "status": "error", "comment": str(e)}
+            finally:
+                try:
+                    _KYOTO_FINAL_LIMIT_CTX["token"] = None
+                    _KYOTO_FINAL_LIMIT_CTX["symbol"] = None
+                except Exception:
+                    pass
+        UVXExecutionEngine.market_order = _kyoto_final_uvx_market_order
+except Exception:
+    try:
+        logger.exception("failed to patch UVXExecutionEngine.market_order for final gate")
+    except Exception:
+        pass
+
+try:
+    if "UVXRiskManager" in globals() and hasattr(UVXRiskManager, "can_open"):
+        def _kyoto_final_uvx_can_open(self, symbol, size):
+            ok, _reason = allowed_to_open(symbol)
+            return bool(ok)
+        UVXRiskManager.can_open = _kyoto_final_uvx_can_open
+except Exception:
+    pass
+
+try:
+    _KYOTO_FINAL_PREV_place_order_mt5 = globals().get("place_order_mt5")
+    if callable(_KYOTO_FINAL_PREV_place_order_mt5):
+        def place_order_mt5(*args, **kwargs):
+            try:
+                symbol = kwargs.get("symbol")
+                if symbol is None and len(args) > 0:
+                    symbol = args[0]
+                sym = _kyoto_final_symbol(symbol)
+                if sym:
+                    ok, reason = allowed_to_open(sym)
+                    if not ok:
+                        logger.info("Execution skipped for %s: %s", sym, reason)
+                        return {"status": "blocked", "comment": reason}
+                return _KYOTO_FINAL_PREV_place_order_mt5(*args, **kwargs)
+            except Exception:
+                logger.exception("final place_order_mt5 gate failed")
+                return {"status": "error"}
+        globals()["place_order_mt5"] = place_order_mt5
+except Exception:
+    pass
+
+# Re-assert the requested limits at the very end.
+try:
+    SYMBOL_TRADE_LIMITS.update({"BTCUSD": 3, "USOIL": 3, "EURUSD": 10, "USDJPY": 10, "XAUUSD": 2})
+    GLOBAL_MAX_OPEN_TRADES = 8
+except Exception:
+    pass
+# === END FINAL SINGLE-DOOR TRADE LIMIT LOCK ===
+
+
+# === BEGIN FINAL SINGLE-DOOR CLEANUP OVERRIDE ===
+try:
+    _KYOTO_SINGLE_DOOR_ORIG_ORDER_WRAPPER = globals().get("order_wrapper")
+    _KYOTO_SINGLE_DOOR_ORIG_PLACE_ORDER = globals().get("place_order_mt5")
+
+    def _kyoto_single_door_submit(mt5_module, order_request, *, source="live"):
+        """One and only live execution door: reserve -> send -> release on failure."""
+        try:
+            req = dict(order_request) if isinstance(order_request, dict) else dict(order_request or {})
+        except Exception:
+            return {"retcode": -1, "comment": f"BAD_ORDER_REQUEST:{source}"}
+
+        sym = _kyoto_final_symbol(req.get("symbol") or req.get("instrument") or req.get("symbol_name"))
+        if not sym:
+            return {"retcode": -1, "comment": f"NO_SYMBOL:{source}", "request": req}
+        if sym.startswith(("DXY", "US10Y")):
+            return {"retcode": -1, "comment": "MACRO_FILTER_SYMBOL_ONLY", "request": req}
+
+        ok, reason, token = _kyoto_final_reserve(sym)
+        if not ok:
+            logger.info("Execution skipped for %s: %s", sym, reason)
+            return {"retcode": -1, "comment": reason, "request": req}
+
+        try:
+            try:
+                _KYOTO_FINAL_LIMIT_CTX["token"] = token
+                _KYOTO_FINAL_LIMIT_CTX["symbol"] = sym
+            except Exception:
+                pass
+
+            req["symbol"] = sym
+            res = _kyoto_final_send_request(mt5_module, req)
+            if not _kyoto_final_order_success(res):
+                _kyoto_final_release(token)
+            return res if isinstance(res, dict) else (res._asdict() if hasattr(res, "_asdict") else {"raw": str(res)})
+        except Exception as e:
+            _kyoto_final_release(token)
+            try:
+                logger.exception("single-door execution failed for %s", sym)
+            except Exception:
+                pass
+            return {"retcode": -1, "comment": str(e), "request": req}
+        finally:
+            try:
+                _KYOTO_FINAL_LIMIT_CTX["token"] = None
+                _KYOTO_FINAL_LIMIT_CTX["symbol"] = None
+            except Exception:
+                pass
+
+    def order_wrapper(mt5_module, order_request):
+        return _kyoto_single_door_submit(mt5_module, order_request, source="order_wrapper")
+
+    def place_order_mt5(*args, **kwargs):
+        try:
+            mt5_module = kwargs.pop("mt5_module", None) or globals().get("mt5") or globals().get("MT5")
+            req = {}
+
+            if len(args) == 1 and isinstance(args[0], dict):
+                req = dict(args[0])
+            elif len(args) >= 6:
+                # Legacy signature: (symbol, action, lot, price, sl, tp)
+                req = {
+                    "symbol": args[0],
+                    "type": args[1],
+                    "volume": args[2],
+                    "price": args[3],
+                    "sl": args[4],
+                    "tp": args[5],
+                }
+            elif len(args) >= 1:
+                req["symbol"] = args[0]
+
+            if kwargs:
+                req.update(kwargs)
+
+            if mt5_module is None:
+                return {"retcode": -1, "comment": "NO_MT5_MODULE", "request": req}
+
+            return _kyoto_single_door_submit(mt5_module, req, source="place_order_mt5")
+        except Exception:
+            try:
+                logger.exception("single-door place_order_mt5 failed")
+            except Exception:
+                pass
+            return {"status": "error"}
+
+    globals()["order_wrapper"] = order_wrapper
+    globals()["place_order_mt5"] = place_order_mt5
+
+    if "UVXExecutionEngine" in globals() and hasattr(UVXExecutionEngine, "market_order"):
+        def _kyoto_single_door_uvx_market_order(self, symbol, side, size, sl=None, tp=None):
+            sym = _kyoto_broker_symbol(symbol) if callable(globals().get("_kyoto_broker_symbol")) else _kyoto_final_symbol(symbol)
+            if not sym:
+                return {"order_id": None, "status": "blocked", "comment": "NO_SYMBOL"}
+            if getattr(self, "mode", "dry_run") != "mt5":
+                return {"order_id": None, "status": "blocked", "comment": "LIVE_ONLY"}
+            if hasattr(self._mt5, "symbol_select"):
+                try:
+                    self._mt5.symbol_select(sym, True)
+                except Exception:
+                    pass
+            tick = None
+            try:
+                tick = self._mt5.symbol_info_tick(sym)
+            except Exception:
+                tick = None
+            req = {
+                "action": getattr(self._mt5, "TRADE_ACTION_DEAL", None),
+                "symbol": sym,
+                "volume": float(size),
+                "type": getattr(self._mt5, "ORDER_TYPE_BUY", None) if str(side).lower() == "buy" else getattr(self._mt5, "ORDER_TYPE_SELL", None),
+                "price": float(getattr(tick, "ask", 0.0) if str(side).lower() == "buy" else getattr(tick, "bid", 0.0)),
+                "deviation": 10,
+                "magic": 123456,
+                "comment": "kyoto_final",
+            }
+            if req["price"] <= 0.0:
+                return {"order_id": None, "status": "blocked", "comment": "NO_VALID_PRICE", "request": req}
+            if sl is not None:
+                req["sl"] = float(sl)
+            if tp is not None:
+                req["tp"] = float(tp)
+            if req.get("sl") in (None, 0, 0.0, "") or req.get("tp") in (None, 0, 0.0, ""):
+                try:
+                    si = self._mt5.symbol_info(sym)
+                    point = float(getattr(si, "point", 0.00001) or 0.00001)
+                except Exception:
+                    point = 0.00001
+                dist = max(point * 10.0, point)
+                if str(side).lower() == "buy":
+                    req.setdefault("sl", req["price"] - dist)
+                    req.setdefault("tp", req["price"] + dist * 2.0)
+                else:
+                    req.setdefault("sl", req["price"] + dist)
+                    req.setdefault("tp", req["price"] - dist * 2.0)
+            return _kyoto_single_door_submit(self._mt5, req, source="UVXExecutionEngine.market_order")
+        UVXExecutionEngine.market_order = _kyoto_single_door_uvx_market_order
+
+    try:
+        SYMBOL_TRADE_LIMITS.update({"BTCUSD": 3, "USOIL": 3, "EURUSD": 10, "USDJPY": 10, "XAUUSD": 2})
+        GLOBAL_MAX_OPEN_TRADES = 8
+    except Exception:
+        pass
+
+    try:
+        logger.info("FINAL CLEANUP: one single live execution door is active")
+    except Exception:
+        pass
+except Exception:
+    try:
+        logger.exception("FINAL CLEANUP OVERRIDE failed")
+    except Exception:
+        pass
+# === END FINAL SINGLE-DOOR CLEANUP OVERRIDE ===
+
+
+# === BEGIN FINAL EXECUTION CORE REBUILD ===
+try:
+    SYMBOL_TRADE_LIMITS.update({"BTCUSD": 3, "USOIL": 3, "EURUSD": 10, "USDJPY": 10, "XAUUSD": 2})
+    GLOBAL_MAX_OPEN_TRADES = 8
+except Exception:
+    pass
+
+try:
+    # Repoint any remaining backup generations to the same single active door.
+    if callable(globals().get("order_wrapper")):
+        globals()["_KYOTO_PREV_order_wrapper_FINAL_LIMITS"] = globals()["order_wrapper"]
+        globals()["_KYOTO_SINGLE_DOOR_ORIG_ORDER_WRAPPER"] = globals()["order_wrapper"]
+    if callable(globals().get("place_order_mt5")):
+        globals()["_KYOTO_FINAL_PREV_place_order_mt5"] = globals()["place_order_mt5"]
+        globals()["_KYOTO_SINGLE_DOOR_ORIG_PLACE_ORDER"] = globals()["place_order_mt5"]
+    if callable(globals().get("execute_signal")):
+        globals()["_KYOTO_PREV_execute_signal_FINAL_LIMITS"] = globals()["execute_signal"]
+
+    if "UVXRiskManager" in globals() and hasattr(UVXRiskManager, "can_open"):
+        def _kyoto_rebuilt_uvx_can_open(self, symbol, size):
+            ok, _reason = allowed_to_open(symbol)
+            return bool(ok)
+        UVXRiskManager.can_open = _kyoto_rebuilt_uvx_can_open
+
+    if "UVXExecutionEngine" in globals() and hasattr(UVXExecutionEngine, "market_order"):
+        # Keep the already-installed single-door market_order wrapper active.
+        pass
+except Exception:
+    try:
+        logger.exception("FINAL EXECUTION CORE REBUILD failed")
+    except Exception:
+        pass
+# === END FINAL EXECUTION CORE REBUILD ===
+
+
+# === BEGIN FINAL LEGACY WRAPPER NEUTRALIZATION ===
+try:
+    # Collapse every remaining legacy wrapper/alias onto the final single door.
+    _KYOTO_FINAL_SINGLE_DOOR = globals().get("order_wrapper")
+    _KYOTO_FINAL_SINGLE_DOOR_EXEC = globals().get("execute_signal")
+    _KYOTO_FINAL_LIMIT_GATE = globals().get("allowed_to_open")
+
+    if callable(_KYOTO_FINAL_SINGLE_DOOR):
+        for _n in (
+            "_KYOTO_PREV_order_wrapper_FINAL_LIMITS",
+            "_KYOTO_ORIG_order_wrapper",
+            "_KYOTO_ORIG_order_wrapper_STRICT",
+            "_KYOTO_PART2_PREV_order_wrapper",
+            "_KYOTO_PART3_PREV_order_wrapper",
+            "_KYOTO_SINGLE_DOOR_ORIG_ORDER_WRAPPER",
+            "_KYOTO_FINAL_PREV_place_order_mt5",
+        ):
+            globals()[_n] = _KYOTO_FINAL_SINGLE_DOOR
+
+        # Keep the public entry points on the same door.
+        globals()["order_wrapper"] = _KYOTO_FINAL_SINGLE_DOOR
+        globals()["place_order_mt5"] = globals().get("place_order_mt5") or _KYOTO_FINAL_SINGLE_DOOR
+
+    if callable(_KYOTO_FINAL_SINGLE_DOOR_EXEC):
+        for _n in (
+            "_KYOTO_PREV_execute_signal_FINAL_LIMITS",
+            "_KYOTO_ORIG_execute_signal",
+            "_KYOTO_ORIG_execute_signal_STRICT",
+            "_KYOTO_PART2_PREV_execute_signal",
+            "_KYOTO_PART3_PREV_execute_signal",
+        ):
+            globals()[_n] = _KYOTO_FINAL_SINGLE_DOOR_EXEC
+        globals()["execute_signal"] = _KYOTO_FINAL_SINGLE_DOOR_EXEC
+
+    if callable(_KYOTO_FINAL_LIMIT_GATE):
+        for _n in (
+            "_KYOTO_FINAL_LIMIT_GATE",
+        ):
+            globals()[_n] = _KYOTO_FINAL_LIMIT_GATE
+
+    # Reassert requested limits.
+    SYMBOL_TRADE_LIMITS.update({"BTCUSD": 3, "USOIL": 3, "EURUSD": 10, "USDJPY": 10, "XAUUSD": 2})
+    GLOBAL_MAX_OPEN_TRADES = 8
+except Exception:
+    try:
+        logger.exception("FINAL LEGACY WRAPPER NEUTRALIZATION failed")
+    except Exception:
+        pass
+# === END FINAL LEGACY WRAPPER NEUTRALIZATION ===
+
+
+# === BEGIN FINAL ONE-DOOR ENFORCEMENT (LAST OVERRIDE) ===
+try:
+    # Resolve the final live door from the most recent single-door wrapper.
+    _KYOTO_FINAL_DOOR = globals().get("order_wrapper")
+    _KYOTO_FINAL_EXEC = globals().get("execute_signal")
+    _KYOTO_FINAL_LIMITS = globals().get("allowed_to_open")
+    _KYOTO_FINAL_MT5_MKT = None
+
+    # Preserve the live order methods on the same door.
+    if callable(_KYOTO_FINAL_DOOR):
+        globals()["order_wrapper"] = _KYOTO_FINAL_DOOR
+        globals()["place_order_mt5"] = _KYOTO_FINAL_DOOR
+        globals()["_KYOTO_PREV_order_wrapper_FINAL_LIMITS"] = _KYOTO_FINAL_DOOR
+        globals()["_KYOTO_ORIG_order_wrapper"] = _KYOTO_FINAL_DOOR
+        globals()["_KYOTO_ORIG_order_wrapper_STRICT"] = _KYOTO_FINAL_DOOR
+        globals()["_KYOTO_PART2_PREV_order_wrapper"] = _KYOTO_FINAL_DOOR
+        globals()["_KYOTO_PART3_PREV_order_wrapper"] = _KYOTO_FINAL_DOOR
+        globals()["_KYOTO_SINGLE_DOOR_ORIG_ORDER_WRAPPER"] = _KYOTO_FINAL_DOOR
+        globals()["_KYOTO_FINAL_PREV_place_order_mt5"] = _KYOTO_FINAL_DOOR
+
+    if callable(_KYOTO_FINAL_EXEC):
+        globals()["execute_signal"] = _KYOTO_FINAL_EXEC
+        globals()["_KYOTO_PREV_execute_signal_FINAL_LIMITS"] = _KYOTO_FINAL_EXEC
+        globals()["_KYOTO_ORIG_execute_signal"] = _KYOTO_FINAL_EXEC
+        globals()["_KYOTO_ORIG_execute_signal_STRICT"] = _KYOTO_FINAL_EXEC
+        globals()["_KYOTO_PART2_PREV_execute_signal"] = _KYOTO_FINAL_EXEC
+        globals()["_KYOTO_PART3_PREV_execute_signal"] = _KYOTO_FINAL_EXEC
+
+    if callable(_KYOTO_FINAL_LIMITS):
+        globals()["allowed_to_open"] = _KYOTO_FINAL_LIMITS
+        globals()["_KYOTO_FINAL_LIMIT_GATE"] = _KYOTO_FINAL_LIMITS
+
+    # Force the execution engine to use the same single door.
+    if "UVXExecutionEngine" in globals():
+        def _kyoto_single_door_market_order(self, symbol: str, side: str, size: float, sl=None, tp=None):
+            sym = _kyoto_broker_symbol(symbol) if callable(globals().get("_kyoto_broker_symbol")) else _kyoto_canonical_symbol(symbol)
+            if getattr(self, "mode", "mt5") != "mt5":
+                return {"order_id": None, "status": "blocked", "comment": "LIVE_ONLY"}
+            if hasattr(self._mt5, "symbol_select"):
+                try:
+                    self._mt5.symbol_select(sym, True)
+                except Exception:
+                    pass
+            tick = None
+            try:
+                tick = self._mt5.symbol_info_tick(sym)
+            except Exception:
+                tick = None
+            req = {
+                "action": getattr(self._mt5, "TRADE_ACTION_DEAL", None),
+                "symbol": sym,
+                "volume": float(size),
+                "type": getattr(self._mt5, "ORDER_TYPE_BUY", None) if str(side).lower() == "buy" else getattr(self._mt5, "ORDER_TYPE_SELL", None),
+                "price": float(getattr(tick, "ask", 0.0) if str(side).lower() == "buy" else getattr(tick, "bid", 0.0)),
+                "deviation": 10,
+                "magic": 123456,
+                "comment": "kyoto_single_door_final",
+            }
+            if req["price"] <= 0.0:
+                return {"order_id": None, "status": "blocked", "comment": "NO_VALID_PRICE", "request": req}
+            if sl is not None:
+                req["sl"] = float(sl)
+            if tp is not None:
+                req["tp"] = float(tp)
+            if req.get("sl") in (None, 0, 0.0, "") or req.get("tp") in (None, 0, 0.0, ""):
+                try:
+                    si = self._mt5.symbol_info(sym)
+                    point = float(getattr(si, "point", 0.00001) or 0.00001)
+                except Exception:
+                    point = 0.00001
+                dist = max(point * 10.0, point)
+                if str(side).lower() == "buy":
+                    req.setdefault("sl", req["price"] - dist)
+                    req.setdefault("tp", req["price"] + dist * 2.0)
+                else:
+                    req.setdefault("sl", req["price"] + dist)
+                    req.setdefault("tp", req["price"] - dist * 2.0)
+            return _kyoto_single_door_submit(self._mt5, req, source="UVXExecutionEngine.market_order")
+        UVXExecutionEngine.market_order = _kyoto_single_door_market_order
+
+    # Reassert the requested live limits at the very end.
+    SYMBOL_TRADE_LIMITS.update({"BTCUSD": 3, "USOIL": 3, "EURUSD": 10, "USDJPY": 10, "XAUUSD": 2})
+    GLOBAL_MAX_OPEN_TRADES = 8
+except Exception:
+    try:
+        logger.exception("FINAL ONE-DOOR ENFORCEMENT failed")
+    except Exception:
+        pass
+# === END FINAL ONE-DOOR ENFORCEMENT ===
+
+
+# === FINAL MT5 SYMBOL RESOLUTION / EXECUTION PATCH ===
+try:
+    def _kyoto_rt_discover_broker_symbols():
+        mt5_mod = globals().get("_mt5") or globals().get("mt5") or globals().get("MT5")
+        try:
+            if mt5_mod is not None:
+                syms = mt5_mod.symbols_get() or []
+                return [s.name for s in syms]
+        except Exception:
+            pass
+        return []
+
+    def _kyoto_rt_map_symbol_to_broker(requested: str) -> str:
+        r = str(requested or "").strip()
+        if not r:
+            return ""
+        broker_symbols = []
+        try:
+            broker_symbols = _kyoto_rt_discover_broker_symbols()
+        except Exception:
+            broker_symbols = []
+        # direct canonical aliases first
+        direct = {
+            "BTCUSD": "BTCUSDm",
+            "XAUUSD": "XAUUSDm",
+            "USDJPY": "USDJPYm",
+            "EURUSD": "EURUSDm",
+            "USOIL": "USOILm",
+        }
+        key = r.upper().replace(".m", "m")
+        key = key[:-1] if key.endswith("m") and key[:-2].endswith(("BTCUSD", "XAUUSD", "USDJPY", "EURUSD", "USOIL")) else key
+        if key in direct:
+            return direct[key]
+        # exact market watch match
+        for b in broker_symbols:
+            if str(b).lower() == r.lower():
+                return str(b)
+        # suffix / prefix / contains matching
+        low_req = r.lower()
+        for b in broker_symbols:
+            bl = str(b).lower()
+            if bl == low_req or bl.startswith(low_req) or bl.endswith(low_req) or low_req in bl:
+                return str(b)
+        # conservative fallback
+        for suffix in ("m", ".m", "-m"):
+            candidate = r if r.lower().endswith(suffix.lower()) else r + suffix
+            for b in broker_symbols:
+                if str(b).lower() == candidate.lower():
+                    return str(b)
+        return r
+
+    def _kyoto_rt_broker_symbol(symbol):
+        try:
+            # keep the broker's exact case if mapping succeeds
+            mapped = _kyoto_rt_map_symbol_to_broker(_kyoto_canonical_symbol(symbol))
+            return str(mapped).strip() if mapped else _kyoto_canonical_symbol(symbol)
+        except Exception:
+            return _kyoto_canonical_symbol(symbol)
+
+    globals()["discover_broker_symbols"] = _kyoto_rt_discover_broker_symbols
+    globals()["map_symbol_to_broker"] = _kyoto_rt_map_symbol_to_broker
+    globals()["_kyoto_broker_symbol"] = _kyoto_rt_broker_symbol
+
+    def _kyoto_rt_fill_sl_tp(mt5_mod, sym, side, price, req):
+        try:
+            if req.get("sl") in (None, 0, 0.0, "") or req.get("tp") in (None, 0, 0.0, ""):
+                si = None
+                try:
+                    si = mt5_mod.symbol_info(sym)
+                except Exception:
+                    si = None
+                point = float(getattr(si, "point", 0.00001) or 0.00001)
+                dist = max(point * 10.0, point)
+                if str(side).lower() in ("buy", "long"):
+                    req.setdefault("sl", float(price) - dist)
+                    req.setdefault("tp", float(price) + dist * 2.0)
+                else:
+                    req.setdefault("sl", float(price) + dist)
+                    req.setdefault("tp", float(price) - dist * 2.0)
+        except Exception:
+            try:
+                if str(side).lower() in ("buy", "long"):
+                    req["sl"] = float(price) - 0.0001
+                    req["tp"] = float(price) + 0.0002
+                else:
+                    req["sl"] = float(price) + 0.0001
+                    req["tp"] = float(price) - 0.0002
+            except Exception:
+                pass
+        return req
+
+    def _kyoto_rt_send_request(mt5_module, req):
+        if mt5_module is None:
+            return {"retcode": -1, "comment": "NO_MT5_MODULE"}
+        if req is None:
+            return {"retcode": -1, "comment": "ORDER_REQUEST_NONE"}
+        if not isinstance(req, dict):
+            try:
+                req = dict(req)
+            except Exception:
+                return {"retcode": -1, "comment": "BAD_ORDER_REQUEST"}
+
+        try:
+            info = mt5_module.account_info()
+            if info is None:
+                return {"retcode": -1, "comment": "NO_ACCOUNT"}
+        except Exception:
+            return {"retcode": -1, "comment": "NO_ACCOUNT"}
+
+        try:
+            raw_sym = _kyoto_canonical_symbol(req.get("symbol") or req.get("instrument"))
+            if not raw_sym:
+                return {"retcode": -1, "comment": "NO_SYMBOL", "request": req}
+
+            sym = _kyoto_rt_broker_symbol(raw_sym)
+            req["symbol"] = sym
+
+            if "action" not in req:
+                req["action"] = getattr(mt5_module, "TRADE_ACTION_DEAL", req.get("action"))
+            if "deviation" not in req:
+                req["deviation"] = 20
+            if "magic" not in req:
+                req["magic"] = 123456
+            if "comment" not in req:
+                req["comment"] = "kyoto_final"
+
+            original_side = str(req.get("type", req.get("side", ""))).lower().strip()
+            buy_const = getattr(mt5_module, "ORDER_TYPE_BUY", None)
+            sell_const = getattr(mt5_module, "ORDER_TYPE_SELL", None)
+            type_value = req.get("type")
+            is_buy = original_side in {"buy", "long"} or type_value == buy_const
+            is_sell = original_side in {"sell", "short"} or type_value == sell_const
+
+            if is_buy:
+                req["type"] = buy_const if buy_const is not None else req.get("type")
+            elif is_sell:
+                req["type"] = sell_const if sell_const is not None else req.get("type")
+            elif isinstance(type_value, str):
+                return {"retcode": -1, "comment": f"BAD_ORDER_SIDE:{req.get('type')}", "request": req}
+
+            try:
+                if hasattr(mt5_module, "symbol_select"):
+                    mt5_module.symbol_select(sym, True)
+            except Exception:
+                pass
+
+            si = None
+            try:
+                si = mt5_module.symbol_info(sym)
+            except Exception:
+                si = None
+
+            if si is None:
+                # try common broker suffix fallbacks without forcing uppercase
+                for alt in (raw_sym, raw_sym + "m", raw_sym + ".m", raw_sym + "-m"):
+                    if not alt or alt == sym:
+                        continue
+                    try:
+                        if hasattr(mt5_module, "symbol_select"):
+                            mt5_module.symbol_select(alt, True)
+                    except Exception:
+                        pass
+                    try:
+                        si = mt5_module.symbol_info(alt)
+                    except Exception:
+                        si = None
+                    if si is not None:
+                        sym = alt
+                        req["symbol"] = sym
+                        break
+            if si is None:
+                return {"retcode": -1, "comment": "SYMBOL_INFO_MISSING", "request": req}
+
+            tick = None
+            try:
+                tick = mt5_module.symbol_info_tick(sym)
+            except Exception:
+                tick = None
+
+            vol_min = float(getattr(si, "volume_min", 0.01) or 0.01)
+            vol_step = float(getattr(si, "volume_step", 0.01) or 0.01)
+            vol_max = getattr(si, "volume_max", None)
+
+            try:
+                req["volume"] = float(req.get("volume") or vol_min)
+            except Exception:
+                req["volume"] = vol_min
+            if vol_step > 0:
+                steps = round((req["volume"] - vol_min) / vol_step)
+                req["volume"] = max(vol_min, vol_min + (steps * vol_step))
+            if vol_max not in (None, 0, 0.0) and req["volume"] > float(vol_max):
+                req["volume"] = float(vol_max)
+
+            price = req.get("price")
+            try:
+                price_f = float(price) if price is not None else 0.0
+            except Exception:
+                price_f = 0.0
+            if price_f <= 0.0 and tick is not None:
+                if is_buy and hasattr(tick, "ask"):
+                    price_f = float(tick.ask)
+                elif is_sell and hasattr(tick, "bid"):
+                    price_f = float(tick.bid)
+                else:
+                    price_f = float(getattr(tick, "last", 0.0) or 0.0)
+            req["price"] = price_f
+            if req["price"] <= 0.0:
+                return {"retcode": -1, "comment": "NO_VALID_PRICE", "request": req}
+
+            _kyoto_rt_fill_sl_tp(mt5_module, sym, "buy" if is_buy else "sell", req["price"], req)
+
+            try:
+                if req.get("type_filling") in (None, 0, 0.0, ""):
+                    filling = getattr(si, "filling_mode", None)
+                    if filling in (None, 0, 0.0, ""):
+                        filling = getattr(mt5_module, "ORDER_FILLING_RETURN", None)
+                    if filling in (None, 0, 0.0, ""):
+                        filling = getattr(mt5_module, "ORDER_FILLING_IOC", None)
+                    if filling not in (None, 0, 0.0, ""):
+                        req["type_filling"] = filling
+            except Exception:
+                pass
+
+            res = mt5_module.order_send(req)
+            return res
+        except Exception:
+            return {"retcode": -1, "comment": "SYMBOL_INFO_MISSING", "request": req}
+    globals()["_kyoto_final_send_request"] = _kyoto_rt_send_request
+
+    def _kyoto_rt_market_order(self, symbol, side, size, sl=None, tp=None, comment="kyoto_final"):
+        sym = _kyoto_rt_broker_symbol(symbol)
+        if not sym:
+            return {"order_id": None, "status": "blocked", "comment": "NO_SYMBOL"}
+        if getattr(self, "mode", "dry_run") != "mt5":
+            return {"order_id": None, "status": "blocked", "comment": "LIVE_ONLY"}
+        if str(sym).upper().startswith(("DXY", "US10Y")):
+            return {"order_id": None, "status": "blocked", "comment": "MACRO_FILTER_SYMBOL_ONLY"}
+        mt5_mod = getattr(self, "_mt5", None)
+        if mt5_mod is None:
+            return {"order_id": None, "status": "blocked", "comment": "NO_MT5_MODULE"}
+        try:
+            if hasattr(mt5_mod, "symbol_select"):
+                mt5_mod.symbol_select(sym, True)
+        except Exception:
+            pass
+        tick = None
+        try:
+            tick = mt5_mod.symbol_info_tick(sym)
+        except Exception:
+            tick = None
+        is_buy = str(side).lower() in ("buy", "long")
+        price = 0.0
+        try:
+            if tick is not None:
+                price = float(getattr(tick, "ask", 0.0) if is_buy else getattr(tick, "bid", 0.0))
+        except Exception:
+            price = 0.0
+        req = {
+            "action": getattr(mt5_mod, "TRADE_ACTION_DEAL", None),
+            "symbol": sym,
+            "volume": float(size),
+            "type": getattr(mt5_mod, "ORDER_TYPE_BUY", None) if is_buy else getattr(mt5_mod, "ORDER_TYPE_SELL", None),
+            "price": price,
+            "deviation": 10,
+            "magic": 123456,
+            "comment": comment,
+        }
+        if price <= 0.0:
+            return {"order_id": None, "status": "blocked", "comment": "NO_VALID_PRICE", "request": req}
+        if sl is not None:
+            req["sl"] = float(sl)
+        if tp is not None:
+            req["tp"] = float(tp)
+        _kyoto_rt_fill_sl_tp(mt5_mod, sym, side, price, req)
+        return _kyoto_single_door_submit(mt5_mod, req, source="market_order")
+
+    if "UVXExecutionEngine" in globals() and hasattr(UVXExecutionEngine, "market_order"):
+        UVXExecutionEngine.market_order = _kyoto_rt_market_order
+
+except Exception:
+    try:
+        logger.exception("FINAL MT5 SYMBOL RESOLUTION / EXECUTION PATCH failed")
+    except Exception:
+        pass
+# === END FINAL MT5 SYMBOL RESOLUTION / EXECUTION PATCH ===
+
+
+# === BEGIN FINAL MT5 FILLING + ATR OVERRIDE (v3) ===
+try:
+    def _kyoto_final_is_unsupported_filling(res):
+        try:
+            if res is None:
+                return False
+            comment = ""
+            retcode = None
+            if isinstance(res, dict):
+                retcode = res.get("retcode", None)
+                comment = str(res.get("comment", "") or res.get("result", "") or "").lower()
+            else:
+                retcode = getattr(res, "retcode", None)
+                comment = str(getattr(res, "comment", "") or "").lower()
+            if retcode is not None:
+                try:
+                    if int(retcode) == 10030:
+                        return True
+                except Exception:
+                    pass
+            return "unsupported filling mode" in comment or "unsupported filling" in comment
+        except Exception:
+            return False
+
+    def _kyoto_final_side_from_request(mt5_module, req):
+        try:
+            t = req.get("type", None)
+        except Exception:
+            t = None
+        try:
+            buy = getattr(mt5_module, "ORDER_TYPE_BUY", None)
+            sell = getattr(mt5_module, "ORDER_TYPE_SELL", None)
+            if t == buy:
+                return "buy"
+            if t == sell:
+                return "sell"
+        except Exception:
+            pass
+        try:
+            t_s = str(t).lower()
+            if t_s in ("buy", "long", "1", "bull", "up"):
+                return "buy"
+            if t_s in ("sell", "short", "-1", "bear", "down"):
+                return "sell"
+        except Exception:
+            pass
+        return "buy"
+
+    def _kyoto_final_supported_filling_modes(mt5_module, si, req):
+        modes = []
+        def _add(val):
+            if val in (None, "", 0.0):
+                return
+            if val not in modes:
+                modes.append(val)
+
+        try:
+            explicit = req.get("type_filling", None)
+            _add(explicit)
+        except Exception:
+            pass
+
+        try:
+            fm = getattr(si, "filling_mode", None)
+            fm_int = int(fm)
+            fm_map = {0: "ORDER_FILLING_FOK", 1: "ORDER_FILLING_IOC", 2: "ORDER_FILLING_RETURN"}
+            if fm_int in fm_map:
+                const_name = fm_map[fm_int]
+                if hasattr(mt5_module, const_name):
+                    _add(getattr(mt5_module, const_name))
+        except Exception:
+            pass
+
+        for const_name in ("ORDER_FILLING_RETURN", "ORDER_FILLING_IOC", "ORDER_FILLING_FOK"):
+            try:
+                _add(getattr(mt5_module, const_name, None))
+            except Exception:
+                pass
+
+        return [m for m in modes if m not in (None, "")]
+
+    def _kyoto_final_apply_atr_sl_tp(mt5_module, sym, req, si, tick):
+        try:
+            side = _kyoto_final_side_from_request(mt5_module, req)
+            is_buy = side == "buy"
+
+            try:
+                price = float(req.get("price") or 0.0)
+            except Exception:
+                price = 0.0
+            if price <= 0 and tick is not None:
+                try:
+                    price = float(tick.ask if is_buy else tick.bid)
+                except Exception:
+                    price = float(getattr(tick, "last", 0.0) or 0.0)
+            if price <= 0:
+                return req
+
+            point = float(getattr(si, "point", None) or getattr(si, "trade_tick_size", None) or getattr(si, "tick_size", None) or 0.00001)
+            stop_level = getattr(si, "stop_level", None)
+            if stop_level is not None and stop_level >= 0:
+                min_sl_dist = float(stop_level) * point
+            else:
+                min_sl_dist = point * 10.0
+            min_sl_dist = max(min_sl_dist, point)
+
+            sl = req.get("sl", None)
+            tp = req.get("tp", None)
+            sl_ok = sl not in (None, 0, 0.0, "")
+            tp_ok = tp not in (None, 0, 0.0, "")
+            too_close = False
+            try:
+                if sl_ok and abs(price - float(sl)) < min_sl_dist:
+                    too_close = True
+                if tp_ok and abs(price - float(tp)) < min_sl_dist:
+                    too_close = True
+            except Exception:
+                too_close = True
+
+            if (not sl_ok) or (not tp_ok) or too_close:
+                df_h1 = None
+                try:
+                    df_h1 = _kyoto_h1_df(mt5_module, None, sym, bars=160)
+                except Exception:
+                    df_h1 = None
+                if df_h1 is not None and callable(globals().get("regime_adaptive_stop")):
+                    try:
+                        sl2, tp2, _stop = regime_adaptive_stop(price, df_h1, "BUY" if is_buy else "SELL", base_atr_multiplier=4.0)
+                        if sl2 and tp2:
+                            req["sl"] = float(sl2)
+                            req["tp"] = float(tp2)
+                            return req
+                    except Exception:
+                        pass
+
+                if is_buy:
+                    req["sl"] = price - max(min_sl_dist, point * 10.0)
+                    req["tp"] = price + max(min_sl_dist * 2.0, point * 20.0)
+                else:
+                    req["sl"] = price + max(min_sl_dist, point * 10.0)
+                    req["tp"] = price - max(min_sl_dist * 2.0, point * 20.0)
+            else:
+                req["sl"] = float(sl)
+                req["tp"] = float(tp)
+
+            try:
+                if abs(price - float(req["sl"])) < min_sl_dist:
+                    req["sl"] = price - min_sl_dist if is_buy else price + min_sl_dist
+                if abs(price - float(req["tp"])) < min_sl_dist:
+                    req["tp"] = price + (min_sl_dist * 2.0) if is_buy else price - (min_sl_dist * 2.0)
+            except Exception:
+                pass
+            req["price"] = price
+            return req
+        except Exception:
+            return req
+
+    def _kyoto_final_send_request(mt5_module, req):
+        if mt5_module is None:
+            return {"retcode": -1, "comment": "NO_MT5_MODULE"}
+        if req is None:
+            return {"retcode": -1, "comment": "ORDER_REQUEST_NONE"}
+        if not isinstance(req, dict):
+            try:
+                req = dict(req)
+            except Exception:
+                return {"retcode": -1, "comment": "BAD_ORDER_REQUEST"}
+
+        try:
+            info = mt5_module.account_info()
+            if info is None:
+                return {"retcode": -1, "comment": "NO_ACCOUNT"}
+        except Exception:
+            return {"retcode": -1, "comment": "NO_ACCOUNT"}
+
+        try:
+            raw_sym = _kyoto_final_symbol(req.get("symbol") or req.get("instrument"))
+            if not raw_sym:
+                return {"retcode": -1, "comment": "NO_SYMBOL", "request": req}
+
+            sym = raw_sym
+            try:
+                broker_mapper = globals().get("map_symbol_to_broker")
+                if callable(broker_mapper):
+                    mapped = broker_mapper(raw_sym)
+                    mapped = str(mapped).strip() if mapped is not None else ""
+                    if mapped:
+                        sym = mapped
+            except Exception:
+                pass
+
+            req["symbol"] = sym
+            try:
+                mt5_module.symbol_select(sym, True)
+            except Exception:
+                pass
+
+            si = None
+            try:
+                si = mt5_module.symbol_info(sym)
+                if si is None:
+                    try:
+                        mt5_module.symbol_select(sym, True)
+                    except Exception:
+                        pass
+                    si = mt5_module.symbol_info(sym)
+            except Exception:
+                si = None
+            if si is None:
+                return {"retcode": -1, "comment": "SYMBOL_INFO_MISSING", "request": req}
+
+            tick = None
+            try:
+                tick = mt5_module.symbol_info_tick(sym)
+            except Exception:
+                tick = None
+            if tick is None:
+                return {"retcode": -1, "comment": "SYMBOL_TICK_MISSING", "request": req}
+
+            try:
+                req = _kyoto_final_apply_atr_sl_tp(mt5_module, sym, req, si, tick)
+            except Exception:
+                pass
+
+            try:
+                req["volume"] = float(req.get("volume") or getattr(si, "volume_min", 0.01) or 0.01)
+            except Exception:
+                req["volume"] = float(getattr(si, "volume_min", 0.01) or 0.01)
+
+            try:
+                req.setdefault("action", getattr(mt5_module, "TRADE_ACTION_DEAL", 1))
+                req.setdefault("price", float(getattr(tick, "ask", 0.0) or getattr(tick, "bid", 0.0) or 0.0))
+                req.setdefault("deviation", 10)
+                req.setdefault("magic", 123456)
+                req.setdefault("comment", "kyoto_final")
+            except Exception:
+                pass
+
+            filling_modes = _kyoto_final_supported_filling_modes(mt5_module, si, req)
+            if not filling_modes:
+                filling_modes = [getattr(mt5_module, "ORDER_FILLING_RETURN", None), getattr(mt5_module, "ORDER_FILLING_IOC", None), getattr(mt5_module, "ORDER_FILLING_FOK", None)]
+                filling_modes = [x for x in filling_modes if x not in (None, "")]
+
+            last_res = None
+            tried = []
+            for fill in filling_modes:
+                trial = dict(req)
+                trial["type_filling"] = fill
+                tried.append(fill)
+                try:
+                    res = mt5_module.order_send(trial)
+                except Exception as e:
+                    last_res = {"retcode": -1, "comment": str(e), "request": trial}
+                    continue
+                last_res = res
+                if not _kyoto_final_is_unsupported_filling(res):
+                    return res
+
+            if last_res is not None:
+                return last_res
+            return {"retcode": -1, "comment": "ORDER_SEND_FAILED", "request": req, "tried_fillings": tried}
+        except Exception as e:
+            try:
+                logger.exception("final send request failed: %s", e)
+            except Exception:
+                pass
+            return {"retcode": -1, "comment": str(e), "request": req}
+
+    globals()["_kyoto_final_send_request"] = _kyoto_final_send_request
+    globals()["_kyoto_final_apply_atr_sl_tp"] = _kyoto_final_apply_atr_sl_tp
+    globals()["_kyoto_final_supported_filling_modes"] = _kyoto_final_supported_filling_modes
+    globals()["_kyoto_final_is_unsupported_filling"] = _kyoto_final_is_unsupported_filling
+    globals()["_kyoto_final_side_from_request"] = _kyoto_final_side_from_request
+
+    if "UVXExecutionEngine" in globals() and hasattr(UVXExecutionEngine, "market_order"):
+        def _kyoto_final_v3_uvx_market_order(self, symbol, side, size, sl=None, tp=None):
+            sym = _kyoto_final_symbol(symbol)
+            if not sym:
+                return {"order_id": None, "status": "blocked", "comment": "NO_SYMBOL"}
+            if getattr(self, "mode", "dry_run") != "mt5":
+                return {"order_id": None, "status": "blocked", "comment": "LIVE_ONLY"}
+            if sym.startswith(("DXY", "US10Y")):
+                return {"order_id": None, "status": "blocked", "comment": "MACRO_FILTER_SYMBOL_ONLY"}
+            ok, reason, token = _kyoto_final_reserve(sym)
+            if not ok:
+                logger.info("Execution skipped for %s: %s", sym, reason)
+                return {"order_id": None, "status": "blocked", "comment": reason}
+            try:
+                _KYOTO_FINAL_LIMIT_CTX["token"] = token
+                _KYOTO_FINAL_LIMIT_CTX["symbol"] = sym
+                req = {
+                    "action": getattr(self._mt5, "TRADE_ACTION_DEAL", None),
+                    "symbol": sym,
+                    "volume": float(size),
+                    "type": getattr(self._mt5, "ORDER_TYPE_BUY", None) if str(side).lower() == "buy" else getattr(self._mt5, "ORDER_TYPE_SELL", None),
+                    "price": float(getattr(self._mt5.symbol_info_tick(sym), "ask", 0.0) if str(side).lower() == "buy" else getattr(self._mt5.symbol_info_tick(sym), "bid", 0.0)),
+                    "deviation": 10,
+                    "magic": 123456,
+                    "comment": "kyoto_final",
+                }
+                if sl is not None:
+                    req["sl"] = float(sl)
+                if tp is not None:
+                    req["tp"] = float(tp)
+                res = _kyoto_final_send_request(self._mt5, req)
+                if not _kyoto_final_order_success(res):
+                    _kyoto_final_release(token)
+                if isinstance(res, dict):
+                    return {"order_id": res.get("order") or res.get("order_id"), "status": res.get("retcode") or res.get("status"), "raw": res}
+                return res
+            except Exception as e:
+                _kyoto_final_release(token)
+                logger.exception("final UVX market_order failed for %s", sym)
+                return {"order_id": None, "status": "error", "comment": str(e)}
+            finally:
+                try:
+                    _KYOTO_FINAL_LIMIT_CTX["token"] = None
+                    _KYOTO_FINAL_LIMIT_CTX["symbol"] = None
+                except Exception:
+                    pass
+        UVXExecutionEngine.market_order = _kyoto_final_v3_uvx_market_order
+
+    _KYOTO_FINAL_PREV_place_order_mt5 = globals().get("place_order_mt5")
+    if callable(_KYOTO_FINAL_PREV_place_order_mt5):
+        def place_order_mt5(*args, **kwargs):
+            try:
+                symbol = kwargs.get("symbol")
+                if symbol is None and len(args) > 0:
+                    symbol = args[0]
+                sym = _kyoto_final_symbol(symbol)
+                if sym:
+                    ok, reason = allowed_to_open(sym)
+                    if not ok:
+                        logger.info("Execution skipped for %s: %s", sym, reason)
+                        return {"status": "blocked", "comment": reason}
+                return _KYOTO_FINAL_PREV_place_order_mt5(*args, **kwargs)
+            except Exception:
+                logger.exception("final place_order_mt5 gate failed")
+                return {"status": "error"}
+        globals()["place_order_mt5"] = place_order_mt5
+
+    try:
+        SYMBOL_TRADE_LIMITS.update({"BTCUSD": 3, "USOIL": 3, "EURUSD": 10, "USDJPY": 10, "XAUUSD": 2})
+        GLOBAL_MAX_OPEN_TRADES = 8
+    except Exception:
+        pass
+    try:
+        ATR_STOP_MULTIPLIER = 4.0
+        ATR_TAKE_PROFIT_MULTIPLIER = 6.0
+    except Exception:
+        pass
+except Exception:
+    try:
+        logger.exception("FINAL MT5 FILLING + ATR OVERRIDE failed")
+    except Exception:
+        pass
+# === END FINAL MT5 FILLING + ATR OVERRIDE (v3) ===
+
+# === BEGIN FINAL SYMBOL PRESERVATION FIX (append-only) ===
+try:
+    def _kyoto_final_preserve_symbol_case(symbol):
+        try:
+            return str(symbol or "").strip()
+        except Exception:
+            return ""
+
+    def _kyoto_final_mt5_symbol_candidates(symbol):
+        raw = _kyoto_final_preserve_symbol_case(symbol)
+        if not raw:
+            return []
+        base = raw.strip()
+        cands = []
+        def add(x):
+            x = _kyoto_final_preserve_symbol_case(x)
+            if x and x not in cands:
+                cands.append(x)
+
+        add(base)
+        add(base.upper())
+        add(base.lower())
+        if base.endswith("m"):
+            add(base[:-1])
+        if base.endswith(".m"):
+            add(base[:-2])
+        canon = base.upper()
+        add(canon + "m")
+        return cands
+
+    def _kyoto_final_resolve_mt5_symbol(mt5_module, symbol):
+        raw = _kyoto_final_preserve_symbol_case(symbol)
+        if not raw:
+            return ""
+        candidates = _kyoto_final_mt5_symbol_candidates(raw)
+        try:
+            if mt5_module is not None and hasattr(mt5_module, "symbol_info"):
+                for cand in candidates:
+                    try:
+                        si = mt5_module.symbol_info(cand)
+                        if si is not None:
+                            try:
+                                if hasattr(mt5_module, "symbol_select"):
+                                    mt5_module.symbol_select(cand, True)
+                            except Exception:
+                                pass
+                            return cand
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        for cand in candidates:
+            if cand.endswith(("m", ".m")):
+                return cand
+        return raw
+
+    def _kyoto_broker_symbol(symbol):
+        mt5_mod = globals().get("_mt5") or globals().get("mt5")
+        resolved = _kyoto_final_resolve_mt5_symbol(mt5_mod, symbol)
+        return resolved or _kyoto_final_preserve_symbol_case(symbol)
+
+    def _kyoto_final_send_request(mt5_module, req):
+        if mt5_module is None:
+            return {"retcode": -1, "comment": "NO_MT5_MODULE"}
+        if req is None:
+            return {"retcode": -1, "comment": "ORDER_REQUEST_NONE"}
+        if not isinstance(req, dict):
+            try:
+                req = dict(req)
+            except Exception:
+                return {"retcode": -1, "comment": "BAD_ORDER_REQUEST"}
+
+        try:
+            info = mt5_module.account_info()
+            if info is None:
+                return {"retcode": -1, "comment": "NO_ACCOUNT"}
+        except Exception:
+            return {"retcode": -1, "comment": "NO_ACCOUNT"}
+
+        try:
+            raw_input = req.get("symbol") or req.get("instrument") or req.get("symbol_name")
+            if not raw_input:
+                return {"retcode": -1, "comment": "NO_SYMBOL", "request": req}
+
+            sym = _kyoto_final_resolve_mt5_symbol(mt5_module, raw_input)
+            if not sym:
+                return {"retcode": -1, "comment": "NO_SYMBOL", "request": req}
+            req["symbol"] = sym
+
+            if "action" not in req:
+                req["action"] = getattr(mt5_module, "TRADE_ACTION_DEAL", req.get("action"))
+            if "deviation" not in req:
+                req["deviation"] = 20
+            if "magic" not in req:
+                req["magic"] = 123456
+            if "comment" not in req:
+                req["comment"] = "kyoto_final"
+
+            original_side = str(req.get("type", req.get("side", ""))).lower().strip()
+            buy_const = getattr(mt5_module, "ORDER_TYPE_BUY", None)
+            sell_const = getattr(mt5_module, "ORDER_TYPE_SELL", None)
+            type_value = req.get("type")
+            is_buy = original_side in {"buy", "long"} or type_value == buy_const
+            is_sell = original_side in {"sell", "short"} or type_value == sell_const
+            if is_buy:
+                req["type"] = buy_const if buy_const is not None else req.get("type")
+            elif is_sell:
+                req["type"] = sell_const if sell_const is not None else req.get("type")
+            elif isinstance(type_value, str):
+                return {"retcode": -1, "comment": f"BAD_ORDER_SIDE:{req.get('type')}", "request": req}
+
+            try:
+                if hasattr(mt5_module, "symbol_select"):
+                    mt5_module.symbol_select(sym, True)
+            except Exception:
+                pass
+
+            si = None
+            try:
+                si = mt5_module.symbol_info(sym)
+            except Exception:
+                si = None
+            if si is None:
+                for alt in _kyoto_final_mt5_symbol_candidates(raw_input):
+                    if alt == sym:
+                        continue
+                    try:
+                        if hasattr(mt5_module, "symbol_select"):
+                            mt5_module.symbol_select(alt, True)
+                    except Exception:
+                        pass
+                    try:
+                        si = mt5_module.symbol_info(alt)
+                    except Exception:
+                        si = None
+                    if si is not None:
+                        sym = alt
+                        req["symbol"] = sym
+                        break
+            if si is None:
+                return {"retcode": -1, "comment": "SYMBOL_INFO_MISSING", "request": req}
+
+            tick = None
+            try:
+                tick = mt5_module.symbol_info_tick(sym)
+            except Exception:
+                tick = None
+            if tick is None:
+                return {"retcode": -1, "comment": "SYMBOL_TICK_MISSING", "request": req}
+
+            try:
+                req = _kyoto_final_apply_atr_sl_tp(mt5_module, sym, req, si, tick)
+            except Exception:
+                pass
+
+            try:
+                req["volume"] = float(req.get("volume") or getattr(si, "volume_min", 0.01) or 0.01)
+            except Exception:
+                req["volume"] = float(getattr(si, "volume_min", 0.01) or 0.01)
+
+            try:
+                req.setdefault("action", getattr(mt5_module, "TRADE_ACTION_DEAL", 1))
+                req.setdefault("price", float(getattr(tick, "ask", 0.0) or getattr(tick, "bid", 0.0) or 0.0))
+                req.setdefault("deviation", 10)
+                req.setdefault("magic", 123456)
+                req.setdefault("comment", "kyoto_final")
+            except Exception:
+                pass
+
+            filling_modes = _kyoto_final_supported_filling_modes(mt5_module, si, req)
+            if not filling_modes:
+                filling_modes = [getattr(mt5_module, "ORDER_FILLING_RETURN", None), getattr(mt5_module, "ORDER_FILLING_IOC", None), getattr(mt5_module, "ORDER_FILLING_FOK", None)]
+                filling_modes = [x for x in filling_modes if x not in (None, "")]
+
+            last_res = None
+            tried = []
+            for fill in filling_modes:
+                trial = dict(req)
+                trial["type_filling"] = fill
+                tried.append(fill)
+                try:
+                    res = mt5_module.order_send(trial)
+                except Exception as e:
+                    last_res = {"retcode": -1, "comment": str(e), "request": trial}
+                    continue
+                last_res = res
+                if not _kyoto_final_is_unsupported_filling(res):
+                    return res
+
+            if last_res is not None:
+                return last_res
+            return {"retcode": -1, "comment": "ORDER_SEND_FAILED", "request": req, "tried_fillings": tried}
+        except Exception as e:
+            try:
+                logger.exception("final send request failed: %s", e)
+            except Exception:
+                pass
+            return {"retcode": -1, "comment": str(e), "request": req}
+
+    globals()["_kyoto_final_preserve_symbol_case"] = _kyoto_final_preserve_symbol_case
+    globals()["_kyoto_final_mt5_symbol_candidates"] = _kyoto_final_mt5_symbol_candidates
+    globals()["_kyoto_final_resolve_mt5_symbol"] = _kyoto_final_resolve_mt5_symbol
+    globals()["_kyoto_broker_symbol"] = _kyoto_broker_symbol
+    globals()["_kyoto_final_send_request"] = _kyoto_final_send_request
+
+    if "UVXExecutionEngine" in globals() and hasattr(UVXExecutionEngine, "market_order"):
+        def _kyoto_final_v4_uvx_market_order(self, symbol, side, size, sl=None, tp=None):
+            sym = _kyoto_final_resolve_mt5_symbol(getattr(self, "_mt5", None), symbol)
+            if not sym:
+                sym = _kyoto_final_preserve_symbol_case(symbol)
+            if not sym:
+                return {"order_id": None, "status": "blocked", "comment": "NO_SYMBOL"}
+            if getattr(self, "mode", "dry_run") != "mt5":
+                return {"order_id": None, "status": "blocked", "comment": "LIVE_ONLY"}
+            if hasattr(self._mt5, "symbol_select"):
+                try:
+                    self._mt5.symbol_select(sym, True)
+                except Exception:
+                    pass
+            tick = None
+            try:
+                tick = self._mt5.symbol_info_tick(sym)
+            except Exception:
+                tick = None
+            req = {
+                "action": getattr(self._mt5, "TRADE_ACTION_DEAL", None),
+                "symbol": sym,
+                "volume": float(size),
+                "type": getattr(self._mt5, "ORDER_TYPE_BUY", None) if str(side).lower() == "buy" else getattr(self._mt5, "ORDER_TYPE_SELL", None),
+                "price": float(getattr(tick, "ask", 0.0) if str(side).lower() == "buy" else getattr(tick, "bid", 0.0)),
+                "deviation": 10,
+                "magic": 123456,
+                "comment": "kyoto_final",
+            }
+            if req["price"] <= 0.0:
+                return {"order_id": None, "status": "blocked", "comment": "NO_VALID_PRICE", "request": req}
+            if sl is not None:
+                req["sl"] = float(sl)
+            if tp is not None:
+                req["tp"] = float(tp)
+            if req.get("sl") in (None, 0, 0.0, "") or req.get("tp") in (None, 0, 0.0, ""):
+                try:
+                    si = self._mt5.symbol_info(sym)
+                    point = float(getattr(si, "point", 0.00001) or 0.00001)
+                except Exception:
+                    point = 0.00001
+                dist = max(point * 10.0, point)
+                if str(side).lower() == "buy":
+                    req.setdefault("sl", req["price"] - dist)
+                    req.setdefault("tp", req["price"] + dist * 2.0)
+                else:
+                    req.setdefault("sl", req["price"] + dist)
+                    req.setdefault("tp", req["price"] - dist * 2.0)
+            return _kyoto_single_door_submit(self._mt5, req, source="UVXExecutionEngine.market_order")
+        UVXExecutionEngine.market_order = _kyoto_final_v4_uvx_market_order
+except Exception:
+    try:
+        logger.exception("FINAL SYMBOL PRESERVATION FIX failed")
+    except Exception:
+        pass
+# === END FINAL SYMBOL PRESERVATION FIX ===
+
+
+# === BEGIN FINAL BROKER SYMBOL HARD FIX ===
+try:
+    _KYOTO_BROKER_ALIAS = {
+        "EURUSD": "EURUSDm",
+        "XAUUSD": "XAUUSDm",
+        "BTCUSD": "BTCUSDm",
+        "USDJPY": "USDJPYm",
+        "USOIL": "USOILm",
+    }
+
+    def _kyoto_force_broker_symbol(symbol):
+        try:
+            raw = str(symbol or "").strip()
+        except Exception:
+            raw = ""
+        if not raw:
+            return ""
+
+        cleaned = raw.replace(" ", "")
+        upper = cleaned.upper().replace(".M", "M").replace("-M", "M")
+        base = upper[:-1] if upper.endswith("M") else upper
+
+        if base in _KYOTO_BROKER_ALIAS:
+            return _KYOTO_BROKER_ALIAS[base]
+
+        # Preserve an exact broker alias if one is already passed in.
+        for v in _KYOTO_BROKER_ALIAS.values():
+            if upper == v.upper():
+                return v
+
+        # Try market-watch discovery only as a fallback.
+        try:
+            mt5_mod = globals().get("_mt5") or globals().get("mt5") or globals().get("MT5")
+            if mt5_mod is not None and hasattr(mt5_mod, "symbols_get"):
+                symbols = mt5_mod.symbols_get() or []
+                low = raw.lower()
+                for s in symbols:
+                    name = str(getattr(s, "name", s) or "")
+                    if name.lower() == low:
+                        return name
+                # allow aliasless canonical matching
+                for s in symbols:
+                    name = str(getattr(s, "name", s) or "")
+                    name_u = name.upper()
+                    if name_u == base or name_u == upper:
+                        return name
+                    if name_u.startswith(base) or name_u.endswith(base) or base in name_u:
+                        return name
+        except Exception:
+            pass
+
+        return _KYOTO_BROKER_ALIAS.get(base, raw)
+
+    def _kyoto_force_broker_request(req):
+        try:
+            if not isinstance(req, dict):
+                req = dict(req or {})
+        except Exception:
+            return req
+        sym = req.get("symbol") or req.get("instrument") or req.get("symbol_name")
+        req["symbol"] = _kyoto_force_broker_symbol(sym)
+        return req
+
+    # Override the broker mapping helpers used by every live send path.
+    def map_symbol_to_broker(requested: str) -> str:
+        return _kyoto_force_broker_symbol(requested)
+
+    def _kyoto_broker_symbol(symbol):
+        return _kyoto_force_broker_symbol(symbol)
+
+    def _kyoto_rt_broker_symbol(symbol):
+        return _kyoto_force_broker_symbol(symbol)
+
+    globals()["map_symbol_to_broker"] = map_symbol_to_broker
+    globals()["_kyoto_broker_symbol"] = _kyoto_broker_symbol
+    globals()["_kyoto_rt_broker_symbol"] = _kyoto_rt_broker_symbol
+    globals()["discover_broker_symbols"] = lambda: list(_KYOTO_BROKER_ALIAS.values())
+
+    # Wrap the execution doors so any raw symbol is normalized before MT5 lookup.
+    _KYOTO_PREV_place_order_mt5 = globals().get("place_order_mt5")
+    if callable(_KYOTO_PREV_place_order_mt5):
+        def place_order_mt5(symbol, action, lot, price, sl, tp):
+            return _KYOTO_PREV_place_order_mt5(_kyoto_force_broker_symbol(symbol), action, lot, price, sl, tp)
+        globals()["place_order_mt5"] = place_order_mt5
+
+    _KYOTO_PREV_order_wrapper = globals().get("order_wrapper")
+    if callable(_KYOTO_PREV_order_wrapper):
+        def order_wrapper(mt5_module, order_request):
+            req = _kyoto_force_broker_request(order_request)
+            return _KYOTO_PREV_order_wrapper(mt5_module, req)
+        globals()["order_wrapper"] = order_wrapper
+
+    _KYOTO_PREV_final_send_request = globals().get("_kyoto_final_send_request")
+    if callable(_KYOTO_PREV_final_send_request):
+        def _kyoto_final_send_request(mt5_module, req):
+            return _KYOTO_PREV_final_send_request(mt5_module, _kyoto_force_broker_request(req))
+        globals()["_kyoto_final_send_request"] = _kyoto_final_send_request
+
+    _KYOTO_PREV_rt_send_request = globals().get("_kyoto_rt_send_request")
+    if callable(_KYOTO_PREV_rt_send_request):
+        def _kyoto_rt_send_request(mt5_module, req):
+            return _KYOTO_PREV_rt_send_request(mt5_module, _kyoto_force_broker_request(req))
+        globals()["_kyoto_rt_send_request"] = _kyoto_rt_send_request
+
+    _KYOTO_PREV_single_door_submit = globals().get("_kyoto_single_door_submit")
+    if callable(_KYOTO_PREV_single_door_submit):
+        def _kyoto_single_door_submit(mt5_module, order_request, *, source="live"):
+            return _KYOTO_PREV_single_door_submit(mt5_module, _kyoto_force_broker_request(order_request), source=source)
+        globals()["_kyoto_single_door_submit"] = _kyoto_single_door_submit
+
+    _KYOTO_PREV_uvx_market_order = globals().get("UVXExecutionEngine", None)
+    if _KYOTO_PREV_uvx_market_order is not None and hasattr(_KYOTO_PREV_uvx_market_order, "market_order"):
+        _KYOTO_PREV_uvx_market_order_fn = getattr(_KYOTO_PREV_uvx_market_order, "market_order")
+        if callable(_KYOTO_PREV_uvx_market_order_fn):
+            def _kyoto_uvx_market_order(self, symbol, side, size, sl=None, tp=None):
+                sym = _kyoto_force_broker_symbol(symbol)
+                return _KYOTO_PREV_uvx_market_order_fn(self, sym, side, size, sl=sl, tp=tp)
+            UVXExecutionEngine.market_order = _kyoto_uvx_market_order
+
+    logger.info("FINAL BROKER SYMBOL HARD FIX armed: %s", _KYOTO_BROKER_ALIAS)
+except Exception:
+    try:
+        logger.exception("FINAL BROKER SYMBOL HARD FIX failed")
+    except Exception:
+        pass
+# === END FINAL BROKER SYMBOL HARD FIX ===
+
+# === FINAL BROKER PATH UNIFICATION v2 ===
+try:
+    _KYOTO_FORCE_BROKER = globals().get("_kyoto_force_broker_symbol") or globals().get("map_symbol_to_broker")
+
+    def _kyoto_unified_symbol(symbol):
+        try:
+            if callable(_KYOTO_FORCE_BROKER):
+                mapped = _KYOTO_FORCE_BROKER(symbol)
+                if mapped:
+                    return str(mapped)
+        except Exception:
+            pass
+        try:
+            return str(symbol or "")
+        except Exception:
+            return ""
+
+    def _kyoto_unify_symbol_map(symbol_map):
+        try:
+            if isinstance(symbol_map, dict):
+                for canon in ("BTCUSD", "XAUUSD", "USDJPY", "EURUSD", "USOIL"):
+                    symbol_map[canon] = _kyoto_unified_symbol(canon)
+                    symbol_map[canon + "m"] = _kyoto_unified_symbol(canon)
+        except Exception:
+            pass
+        return symbol_map
+
+    _KYOTO_PREV_EXECUTE_SIGNAL_UNIFY = globals().get("execute_signal")
+    if callable(_KYOTO_PREV_EXECUTE_SIGNAL_UNIFY):
+        def execute_signal(sym, signal, price, mt5_module, symbol_map):
+            sym_broker = _kyoto_unified_symbol(sym)
+            symbol_map = _kyoto_unify_symbol_map(symbol_map)
+            return _KYOTO_PREV_EXECUTE_SIGNAL_UNIFY(sym_broker, signal, price, mt5_module, symbol_map)
+        globals()["execute_signal"] = execute_signal
+
+    _KYOTO_PREV_ORDER_WRAPPER_UNIFY = globals().get("order_wrapper")
+    if callable(_KYOTO_PREV_ORDER_WRAPPER_UNIFY):
+        def order_wrapper(mt5_module, order_request):
+            try:
+                req = dict(order_request) if isinstance(order_request, dict) else dict(order_request or {})
+            except Exception:
+                req = {}
+            req["symbol"] = _kyoto_unified_symbol(req.get("symbol") or req.get("instrument") or req.get("symbol_name"))
+            return _KYOTO_PREV_ORDER_WRAPPER_UNIFY(mt5_module, req)
+        globals()["order_wrapper"] = order_wrapper
+
+    _KYOTO_PREV_PLACE_ORDER_UNIFY = globals().get("place_order_mt5")
+    if callable(_KYOTO_PREV_PLACE_ORDER_UNIFY):
+        def place_order_mt5(symbol, action, lot, price, sl, tp):
+            return _KYOTO_PREV_PLACE_ORDER_UNIFY(_kyoto_unified_symbol(symbol), action, lot, price, sl, tp)
+        globals()["place_order_mt5"] = place_order_mt5
+
+    logger.info("FINAL BROKER PATH UNIFICATION v2 armed")
+except Exception:
+    try:
+        logger.exception("FINAL BROKER PATH UNIFICATION v2 failed")
+    except Exception:
+        pass
+
+
+# === FINAL EXACT STOP / TAKE-PROFIT ALIGNMENT v1 ===
+# Force every remaining path to use the same ATR-based setup:
+# SL = 4.0 ATR, TP = 6.0 ATR.
+
+try:
+    ATR_STOP_MULTIPLIER = 4.0
+    ATR_TAKE_PROFIT_MULTIPLIER = 6.0
+except Exception:
+    pass
+
+try:
+    _cfg = globals().setdefault("CONFIG", {})
+    _cfg["ATR_STOP_MULTIPLIER"] = 4.0
+    _cfg["ATR_TAKE_PROFIT_MULTIPLIER"] = 6.0
+    _cfg["SL_ATR_MULTIPLIER"] = 4.0
+    _cfg["TP_ATR_MULTIPLIER"] = 6.0
+    _cfg.setdefault("BACKTEST_PARAMS", {})
+    _exact_params = {
+        "BTCUSD": {"sl_atr_mult": 4.0, "tp_atr_mult": 6.0, "risk_pct": 0.005},
+        "BTCUSDm": {"sl_atr_mult": 4.0, "tp_atr_mult": 6.0, "risk_pct": 0.005},
+        "USOIL": {"sl_atr_mult": 4.0, "tp_atr_mult": 6.0, "risk_pct": 0.005},
+        "USOILm": {"sl_atr_mult": 4.0, "tp_atr_mult": 6.0, "risk_pct": 0.005},
+        "XAUUSD": {"sl_atr_mult": 4.0, "tp_atr_mult": 6.0, "risk_pct": 0.005},
+        "XAUUSDm": {"sl_atr_mult": 4.0, "tp_atr_mult": 6.0, "risk_pct": 0.005},
+        "EURUSD": {"sl_atr_mult": 4.0, "tp_atr_mult": 6.0, "risk_pct": 0.005},
+        "EURUSDm": {"sl_atr_mult": 4.0, "tp_atr_mult": 6.0, "risk_pct": 0.005},
+        "USDJPY": {"sl_atr_mult": 4.0, "tp_atr_mult": 6.0, "risk_pct": 0.005},
+        "USDJPYm": {"sl_atr_mult": 4.0, "tp_atr_mult": 6.0, "risk_pct": 0.005},
+    }
+    _cfg["BACKTEST_PARAMS"].update(_exact_params)
+except Exception:
+    pass
+
+try:
+    def _kyoto_mem_adjust_stop_tp(symbol, timeframe, base_stop_mult=4.0, base_tp_mult=6.0):
+        try:
+            prof = kyoto_memory_profile(symbol, timeframe)
+        except Exception:
+            prof = {}
+        try:
+            # Preserve the same exact ATR multiples everywhere.
+            return 4.0, 6.0, prof
+        except Exception:
+            return float(base_stop_mult), float(base_tp_mult), prof
+    globals()["_kyoto_mem_adjust_stop_tp"] = _kyoto_mem_adjust_stop_tp
+except Exception:
+    pass
+
+try:
+    _KYOTO_PREV_regime_adaptive_stop = globals().get("regime_adaptive_stop")
+    def regime_adaptive_stop(entry_price, df_h1, side, base_atr_multiplier=4.0):
+        """
+        Final exact-stop override:
+        always returns SL at 4.0 ATR and TP at 6.0 ATR on every path.
+        """
+        try:
+            atr = None
+            try:
+                ind = add_technical_indicators(df_h1)
+                atr = float(ind["atr14"].iloc[-1])
+            except Exception:
+                atr = None
+            if atr is None or atr <= 0:
+                try:
+                    highs = [float(x) for x in df_h1["high"].astype(float).values[-14:]]
+                    lows = [float(x) for x in df_h1["low"].astype(float).values[-14:]]
+                    closes = [float(x) for x in df_h1["close"].astype(float).values[-14:]]
+                    trs = [max(h - l, abs(h - c), abs(l - c)) for h, l, c in zip(highs, lows, closes)]
+                    atr = sum(trs) / len(trs) if trs else 0.0
+                except Exception:
+                    atr = 0.0
+            atr = float(atr or 0.0)
+            if atr <= 0:
+                # keep old behavior if ATR cannot be resolved
+                if callable(_KYOTO_PREV_regime_adaptive_stop):
+                    return _KYOTO_PREV_regime_adaptive_stop(entry_price, df_h1, side, base_atr_multiplier=4.0)
+                return (entry_price, entry_price, 0.0)
+
+            stop_dist = atr * 4.0
+            tp_dist = atr * 6.0
+            side_s = str(side).lower()
+            if side_s in ("buy", "long", "1", "bull", "up"):
+                sl = float(entry_price) - stop_dist
+                tp = float(entry_price) + tp_dist
+            else:
+                sl = float(entry_price) + stop_dist
+                tp = float(entry_price) - tp_dist
+            return (float(sl), float(tp), float(stop_dist))
+        except Exception:
+            if callable(_KYOTO_PREV_regime_adaptive_stop):
+                try:
+                    return _KYOTO_PREV_regime_adaptive_stop(entry_price, df_h1, side, base_atr_multiplier=4.0)
+                except Exception:
+                    pass
+            return (float(entry_price), float(entry_price), 0.0)
+
+    globals()["regime_adaptive_stop"] = regime_adaptive_stop
+except Exception:
+    pass
+
+try:
+    # Ensure any direct constant readers also see the exact values.
+    globals()["ATR_STOP_MULTIPLIER"] = 4.0
+    globals()["ATR_TAKE_PROFIT_MULTIPLIER"] = 6.0
+except Exception:
+    pass
+
+# --- END FINAL EXACT STOP / TAKE-PROFIT ALIGNMENT v1 ---
+
+
+# --- FINAL STRICT STOP / SYMBOL ALIGNMENT OVERRIDE v2 ---
+try:
+    def _kyoto_final_normalize_symbol(symbol):
+        try:
+            s = str(symbol or "").strip()
+        except Exception:
+            s = ""
+        if not s:
+            return s
+        try:
+            broker_fn = globals().get("_kyoto_broker_symbol")
+            if callable(broker_fn):
+                mapped = broker_fn(s)
+                if mapped:
+                    return str(mapped).strip()
+        except Exception:
+            pass
+        try:
+            mapper = globals().get("map_symbol_to_broker")
+            if callable(mapper):
+                mapped = mapper(s)
+                if mapped:
+                    return str(mapped).strip()
+        except Exception:
+            pass
+        return s
+
+    def _kyoto_final_side(action_or_type):
+        s = str(action_or_type or "").lower()
+        if s in ("buy", "long", "0", "1", "bull", "up"):
+            return "BUY"
+        return "SELL"
+
+    def _kyoto_final_fetch_h1(mt5_module, symbol_map, symbol):
+        try:
+            raw = str(symbol or "")
+            mapped = raw
+            try:
+                if isinstance(symbol_map, dict):
+                    mapped = symbol_map.get(raw, raw)
+            except Exception:
+                mapped = raw
+            df = None
+            try:
+                df = _kyoto_h1_df(mt5_module, symbol_map or {}, mapped, bars=160)
+            except Exception:
+                df = None
+            if df is None and mapped != raw:
+                try:
+                    df = _kyoto_h1_df(mt5_module, symbol_map or {}, raw, bars=160)
+                except Exception:
+                    df = None
+            return df
+        except Exception:
+            return None
+
+    def _kyoto_final_exact_stops(mt5_module, symbol_map, symbol, price, side):
+        """Rebuild stops from the current symbol only; never reuse stale ctx stops."""
+        try:
+            sym = _kyoto_final_normalize_symbol(symbol)
+            df_h1 = _kyoto_final_fetch_h1(mt5_module, symbol_map or {}, sym)
+            if df_h1 is None:
+                try:
+                    # try again using the broker alias as stored in MT5 market watch
+                    df_h1 = _kyoto_final_fetch_h1(mt5_module, symbol_map or {}, sym)
+                except Exception:
+                    df_h1 = None
+
+            if df_h1 is not None and callable(globals().get("regime_adaptive_stop")):
+                sl, tp, _sd = regime_adaptive_stop(float(price), df_h1, side, base_atr_multiplier=4.0)
+                if sl is not None and tp is not None:
+                    return float(sl), float(tp)
+
+            # final fallback: preserve direction and use a conservative distance derived from price.
+            # This is only used if H1 data could not be fetched.
+            px = float(price)
+            fallback_dist = max(abs(px) * 0.01, 10.0)
+            if side == "BUY":
+                return px - fallback_dist, px + fallback_dist * 1.5
+            return px + fallback_dist, px - fallback_dist * 1.5
+        except Exception:
+            px = float(price or 0.0)
+            if side == "BUY":
+                return px * 0.999, px * 1.0015
+            return px * 1.001, px * 0.9985
+
+    _KYOTO_PREV_FINAL_regime_adaptive_stop = globals().get("regime_adaptive_stop")
+    def regime_adaptive_stop(entry_price, df_h1, side, base_atr_multiplier=4.0):
+        """Final authoritative stop logic: 4.0 ATR SL and 6.0 ATR TP everywhere."""
+        try:
+            atr = None
+            try:
+                ind = add_technical_indicators(df_h1.copy())
+                atr = float(ind["atr14"].iloc[-1])
+            except Exception:
+                try:
+                    highs = [float(x) for x in df_h1["high"].astype(float).values[-14:]]
+                    lows = [float(x) for x in df_h1["low"].astype(float).values[-14:]]
+                    closes = [float(x) for x in df_h1["close"].astype(float).values[-14:]]
+                    trs = [max(h - l, abs(h - c), abs(l - c)) for h, l, c in zip(highs, lows, closes)]
+                    atr = sum(trs) / len(trs) if trs else 0.0
+                except Exception:
+                    atr = 0.0
+            atr = float(atr or 0.0)
+            if atr <= 0:
+                if callable(_KYOTO_PREV_FINAL_regime_adaptive_stop):
+                    return _KYOTO_PREV_FINAL_regime_adaptive_stop(entry_price, df_h1, side, base_atr_multiplier=4.0)
+                return (float(entry_price), float(entry_price), 0.0)
+            stop_dist = atr * 4.0
+            tp_dist = atr * 6.0
+            side_s = str(side).lower()
+            if side_s in ("buy", "long", "1", "bull", "up"):
+                return float(entry_price - stop_dist), float(entry_price + tp_dist), float(stop_dist)
+            return float(entry_price + stop_dist), float(entry_price - tp_dist), float(stop_dist)
+        except Exception:
+            if callable(_KYOTO_PREV_FINAL_regime_adaptive_stop):
+                try:
+                    return _KYOTO_PREV_FINAL_regime_adaptive_stop(entry_price, df_h1, side, base_atr_multiplier=4.0)
+                except Exception:
+                    pass
+            px = float(entry_price or 0.0)
+            return (px, px, 0.0)
+
+    def place_order_mt5(symbol, action, lot, price, sl, tp):
+        ctx = _kyoto_ctx_get() or {}
+        try:
+            sym = _kyoto_final_normalize_symbol(symbol or ctx.get("symbol") or ctx.get("instrument") or "")
+            side = _kyoto_final_side(action)
+            px = float(price or ctx.get("entry") or 0.0)
+            if px <= 0:
+                try:
+                    mt5_mod = globals().get("_mt5") or globals().get("mt5")
+                    tick = mt5_mod.symbol_info_tick(sym) if mt5_mod is not None else None
+                    if tick is not None:
+                        px = float(tick.ask if side == "BUY" else tick.bid)
+                except Exception:
+                    px = 0.0
+            if px <= 0:
+                return {"status": "skipped", "comment": "NO_VALID_PRICE", "symbol": sym}
+            mt5_mod = globals().get("_mt5") or globals().get("mt5")
+            symbol_map = globals().get("_KYOTO_SYMBOL_MAP", {}) or {}
+            calc_sl, calc_tp = _kyoto_final_exact_stops(mt5_mod, symbol_map, sym, px, side)
+            req_sl = calc_sl if calc_sl is not None else sl
+            req_tp = calc_tp if calc_tp is not None else tp
+            return _KYOTO_ORIG_place_order_mt5(sym, action, lot, px, req_sl, req_tp)
+        except Exception:
+            try:
+                sym = _kyoto_final_normalize_symbol(symbol)
+                return _KYOTO_ORIG_place_order_mt5(sym, action, lot, price, sl, tp)
+            except Exception as e:
+                logger.exception("final place_order_mt5 override failed: %s", e)
+                return {"status": "error", "comment": str(e), "symbol": symbol}
+
+    def order_wrapper(mt5_module, order_request):
+        req = dict(order_request) if isinstance(order_request, dict) else dict(order_request or {})
+        ctx = _kyoto_ctx_get() or {}
+        try:
+            sym = _kyoto_final_normalize_symbol(req.get("symbol") or req.get("instrument") or ctx.get("symbol") or "")
+            if not sym:
+                sym = _kyoto_final_normalize_symbol(ctx.get("symbol") or "")
+            if ctx.get("allowed") is False:
+                return {"retcode": -1, "comment": ctx.get("reason", "risk_gate"), "request": req}
+            if ctx.get("quality") is not None and float(ctx.get("quality", 0.0)) < 0.35:
+                return {"retcode": -1, "comment": "quality_below_threshold", "request": req}
+            if ctx.get("regime") in ("ranging", "sideways", "choppy"):
+                return {"retcode": -1, "comment": f"regime_{ctx.get('regime')}", "request": req}
+
+            side = _kyoto_final_side(req.get("type", req.get("side", req.get("action", "BUY"))))
+            price = req.get("price") or ctx.get("entry") or 0.0
+            try:
+                price = float(price)
+            except Exception:
+                price = 0.0
+            if price <= 0:
+                try:
+                    tick = mt5_module.symbol_info_tick(sym)
+                    if tick is not None:
+                        price = float(tick.ask if side == "BUY" else tick.bid)
+                except Exception:
+                    price = 0.0
+            if price <= 0:
+                return {"retcode": -1, "comment": "NO_VALID_PRICE", "request": req}
+
+            mt5_sym_map = globals().get("_KYOTO_SYMBOL_MAP", {}) or {}
+            calc_sl, calc_tp = _kyoto_final_exact_stops(mt5_module, mt5_sym_map, sym, price, side)
+            req["symbol"] = sym
+            req["price"] = price
+            req["sl"] = float(calc_sl)
+            req["tp"] = float(calc_tp)
+            return _KYOTO_ORIG_order_wrapper(mt5_module, req)
+        except Exception:
+            try:
+                logger.exception("final order_wrapper override failed")
+            except Exception:
+                pass
+            return _KYOTO_ORIG_order_wrapper(mt5_module, req)
+
+    def execute_signal(sym, signal, price, mt5_module, symbol_map):
+        try:
+            sym_u = _kyoto_final_normalize_symbol(sym)
+            if str(sym_u).upper().startswith(("DXY", "US10Y")):
+                logger.info("Execution skipped for %s: macro filter symbol only", sym_u)
+                return None
+            allowed, reason = allowed_to_open(sym_u)
+            if not allowed:
+                logger.info("Execution skipped for %s: %s", sym_u, reason)
+                return None
+            prev = globals().get("_KYOTO_ORIG_execute_signal_LIMITS")
+            if callable(prev):
+                return prev(sym_u, signal, price, mt5_module, symbol_map)
+            return None
+        except Exception:
+            logger.exception("final execute_signal override failed for %s", sym)
+            return None
+
+    globals()["regime_adaptive_stop"] = regime_adaptive_stop
+    globals()["place_order_mt5"] = place_order_mt5
+    globals()["order_wrapper"] = order_wrapper
+    globals()["execute_signal"] = execute_signal
+    globals()["ATR_STOP_MULTIPLIER"] = 4.0
+    globals()["ATR_TAKE_PROFIT_MULTIPLIER"] = 6.0
+    globals()["_kyoto_mem_adjust_stop_tp"] = lambda symbol, timeframe, base_stop_mult=4.0, base_tp_mult=6.0: (4.0, 6.0, globals().get("kyoto_memory_profile", lambda *_: {}) (symbol, timeframe) if callable(globals().get("kyoto_memory_profile")) else {})
+except Exception:
+    try:
+        logger.exception("FINAL STRICT STOP / SYMBOL ALIGNMENT OVERRIDE v2 failed")
+    except Exception:
+        pass
+# --- END FINAL STRICT STOP / SYMBOL ALIGNMENT OVERRIDE v2 ---
+
+
+# --- FINAL EXECUTION RECOVERY OVERRIDE v1 ---
+# Keep the last execution entrypoint direct and minimal so signals can reach MT5.
+try:
+    _KYOTO_FINAL_EXECUTE_SIGNAL_PREV = globals().get("execute_signal")
+except Exception:
+    _KYOTO_FINAL_EXECUTE_SIGNAL_PREV = None
+
+def execute_signal(sym, signal, price, mt5_module, symbol_map):
+    try:
+        sym_u = _kyoto_final_normalize_symbol(sym)
+        if sym_u.startswith(("DXY", "US10Y")):
+            logger.info("Execution skipped for %s: macro filter symbol only", sym_u)
+            return None
+        if signal is None:
+            logger.info("Execution skipped for %s: signal is None", sym_u)
+            return None
+        try:
+            signal = float(signal)
+        except Exception:
+            logger.info("Execution skipped for %s: invalid signal", sym_u)
+            return None
+
+        # Keep the same live threshold policy, but do not let older wrappers block this path.
+        params = {}
+        try:
+            cfg = globals().get("CONFIG", {})
+            if isinstance(cfg, dict):
+                params = cfg.get("BACKTEST_PARAMS", {}).get(sym_u, {}) or {}
+        except Exception:
+            params = {}
+        threshold = float(params.get("signal_thresh", 0.30))
+        if abs(signal) < threshold:
+            logger.info(
+                "Execution skipped for %s: signal below execution threshold (%.3f) signal=%.4f",
+                sym_u, threshold, signal,
+            )
+            return None
+
+        ok, reason = allowed_to_open(sym_u)
+        if not ok:
+            logger.info("Execution skipped for %s: %s", sym_u, reason)
+            return None
+
+        mapped = symbol_map.get(sym_u, symbol_map.get(sym, sym_u)) if symbol_map else sym_u
+        volume = float(globals().get("CONFIG", {}).get("DEFAULT_ORDER_VOLUME", 0.01) if isinstance(globals().get("CONFIG", {}), dict) else 0.01)
+        side = "buy" if signal > 0 else "sell"
+        req = {"symbol": mapped, "volume": volume, "type": side, "price": float(price or 0.0)}
+
+        # Use the current request symbol for the context so downstream stop logic uses the same path.
+        try:
+            live_ctx = {
+                "symbol": sym_u,
+                "signal": signal,
+                "quality": min(1.0, abs(signal)),
+                "regime": "trending",
+                "allowed": ok,
+                "reason": reason,
+                "entry": float(price or 0.0),
+                "tech": signal,
+                "fund": float(get_fused_score(sym_u)) if "get_fused_score" in globals() else 0.0,
+                "sent": float(get_news_impact_score(sym_u)) if "get_news_impact_score" in globals() else 0.0,
+            }
+            _kyoto_ctx_set(**live_ctx)
+        except Exception:
+            pass
+
+        try:
+            logger.info(
+                "Attempting execution for %s: side=%s vol=%s price=%.6f signal=%.4f threshold=%.3f",
+                sym_u, side, volume, float(price or 0.0), signal, threshold,
+            )
+            return order_wrapper(mt5_module, req)
+        finally:
+            try:
+                _kyoto_ctx_clear()
+            except Exception:
+                pass
+    except Exception:
+        logger.exception("final execution recovery override failed for %s", sym)
+        try:
+            _kyoto_ctx_clear()
+        except Exception:
+            pass
+        return None
+
+CONFIG["EXECUTION_SIGNAL_THRESHOLD"] = 0.30
+# --- END FINAL EXECUTION RECOVERY OVERRIDE v1 ---
